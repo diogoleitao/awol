@@ -1,0 +1,3 @@
+# awol is read-only, forever
+
+awol never changes anything in AWS: no upgrade buttons, no enabling or disabling Extended Support, no tagging, nothing that writes. It shows what has drifted and leaves the fix to the user's own tooling, so it only ever needs `ReadOnlyAccess` and can be trusted with any credentials. Because most users run it with credentials broader than that, the read-only rule is enforced in code: the one place that runs the `aws` CLI accepts only `describe-*`, `list-*` and `get-*` subcommands plus `sts get-caller-identity`, refuses anything else before it runs, and a test checks every AWS call awol makes against that allowlist.
