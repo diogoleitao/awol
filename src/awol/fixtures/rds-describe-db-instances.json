@@ -1,0 +1,64 @@
+{
+  "DBInstances": [
+    {
+      "DBInstanceIdentifier": "db-1",
+      "DBInstanceClass": "db.m5.large",
+      "Engine": "mysql",
+      "DBInstanceStatus": "available",
+      "AvailabilityZone": "eu-west-1a",
+      "MultiAZ": false,
+      "EngineVersion": "8.0.46-rds.20260624",
+      "AutoMinorVersionUpgrade": true,
+      "StorageType": "gp2",
+      "EngineLifecycleSupport": "open-source-rds-extended-support"
+    },
+    {
+      "DBInstanceIdentifier": "db-2",
+      "DBInstanceClass": "db.m7i.2xlarge",
+      "Engine": "postgres",
+      "DBInstanceStatus": "available",
+      "AvailabilityZone": "eu-west-1b",
+      "MultiAZ": true,
+      "EngineVersion": "14.19",
+      "AutoMinorVersionUpgrade": false,
+      "StorageType": "gp3",
+      "EngineLifecycleSupport": "open-source-rds-extended-support"
+    },
+    {
+      "DBInstanceIdentifier": "db-3",
+      "DBInstanceClass": "db.m6g.xlarge",
+      "Engine": "postgres",
+      "DBInstanceStatus": "backing-up",
+      "AvailabilityZone": "eu-west-1b",
+      "MultiAZ": true,
+      "EngineVersion": "14.22",
+      "AutoMinorVersionUpgrade": true,
+      "StorageType": "gp3",
+      "EngineLifecycleSupport": "open-source-rds-extended-support-disabled"
+    },
+    {
+      "DBInstanceIdentifier": "db-4",
+      "DBInstanceClass": "db.t4g.micro",
+      "Engine": "postgres",
+      "DBInstanceStatus": "available",
+      "AvailabilityZone": "eu-west-1c",
+      "MultiAZ": false,
+      "EngineVersion": "16.13",
+      "AutoMinorVersionUpgrade": true,
+      "StorageType": "gp3",
+      "EngineLifecycleSupport": "open-source-rds-extended-support"
+    },
+    {
+      "DBInstanceIdentifier": "db-5",
+      "DBInstanceClass": "db.t4g.micro",
+      "Engine": "postgres",
+      "DBInstanceStatus": "available",
+      "AvailabilityZone": "eu-west-1a",
+      "MultiAZ": false,
+      "EngineVersion": "17.9",
+      "AutoMinorVersionUpgrade": true,
+      "StorageType": "gp3",
+      "EngineLifecycleSupport": "open-source-rds-extended-support"
+    }
+  ]
+}
