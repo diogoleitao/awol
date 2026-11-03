@@ -1,18 +1,21 @@
 import type { AwsRunner } from "../aws/runner.ts";
 import type { ReleaseCycle } from "../endoflife/release-cycles.ts";
-import { readRdsInstances } from "./rds.ts";
+import { type ExtendedSupport, readRdsInstances, type SupportDates } from "./rds.ts";
 
 // How many regions a Scan reads at once.
 const REGION_CONCURRENCY = 8;
 
-// One Component as a Scan stored it: what AWS reported, and the Release Cycle
-// its version matched, if any.
+// One Component as a Scan stored it: what AWS reported, AWS's support dates
+// for its AWS major version, and the Release Cycle its version matched, if
+// any. A Scan from before awol read AWS's dates and settings has none.
 export type ScannedComponent = {
   service: "RDS";
   product: string;
   region: string;
   identifier: string;
   version: string;
+  extendedSupport?: ExtendedSupport;
+  awsLifecycle?: SupportDates;
   releaseCycle?: ReleaseCycle;
 };
 

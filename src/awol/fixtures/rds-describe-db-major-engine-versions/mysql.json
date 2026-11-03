@@ -1,0 +1,52 @@
+{
+  "DBMajorEngineVersions": [
+    {
+      "Engine": "mysql",
+      "MajorEngineVersion": "5.7",
+      "SupportedEngineLifecycles": [
+        {
+          "LifecycleSupportName": "open-source-rds-standard-support",
+          "LifecycleSupportStartDate": "2016-02-22T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2024-02-29T23:59:59.999000+00:00"
+        },
+        {
+          "LifecycleSupportName": "open-source-rds-extended-support",
+          "LifecycleSupportStartDate": "2024-03-01T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2029-06-30T23:59:59.999000+00:00"
+        }
+      ]
+    },
+    {
+      "Engine": "mysql",
+      "MajorEngineVersion": "8.0",
+      "SupportedEngineLifecycles": [
+        {
+          "LifecycleSupportName": "open-source-rds-standard-support",
+          "LifecycleSupportStartDate": "2018-10-23T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2026-07-31T23:59:59.999000+00:00"
+        },
+        {
+          "LifecycleSupportName": "open-source-rds-extended-support",
+          "LifecycleSupportStartDate": "2026-08-01T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2029-07-31T23:59:59.999000+00:00"
+        }
+      ]
+    },
+    {
+      "Engine": "mysql",
+      "MajorEngineVersion": "8.4",
+      "SupportedEngineLifecycles": [
+        {
+          "LifecycleSupportName": "open-source-rds-standard-support",
+          "LifecycleSupportStartDate": "2024-11-21T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2029-07-31T23:59:59.999000+00:00"
+        },
+        {
+          "LifecycleSupportName": "open-source-rds-extended-support",
+          "LifecycleSupportStartDate": "2029-08-01T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2032-07-31T23:59:59.999000+00:00"
+        }
+      ]
+    }
+  ]
+}

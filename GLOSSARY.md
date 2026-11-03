@@ -18,6 +18,10 @@ _Avoid_: Engine, technology, service
 A line of a Product that shares one set of support dates, such as RDS PostgreSQL 13 or Lambda python3.12.
 _Avoid_: Version, branch, release line
 
+**AWS major version**:
+A line of a Product that AWS publishes its own support dates for, such as RDS PostgreSQL 13 or RDS MySQL 8.0. It can be wider than a Release Cycle: RDS MySQL Release Cycle 8.0.46 sits within AWS major version 8.0.
+_Avoid_: Major version, major, engine version
+
 ### Setup
 
 **Discovery**:

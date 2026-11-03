@@ -1,9 +1,9 @@
-import { KeyRound } from "lucide-react";
+import { KeyRound, TriangleAlert } from "lucide-react";
 import { connection } from "next/server";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import type { ComponentRow, LastScan } from "../awol/page-model.ts";
+import type { ComponentRow, LastScan, SupportDates } from "../awol/page-model.ts";
 import { STATUSES, type Status } from "../awol/status.ts";
 import { appAwol } from "./app-awol.ts";
 import { ScanButton } from "./scan-button.tsx";
@@ -71,6 +71,7 @@ function ScanResult({ scan }: { scan: LastScan }) {
             <TableHead>Active support ends</TableHead>
             <TableHead>End of life</TableHead>
             <TableHead>Extended Support ends</TableHead>
+            <TableHead>At End of life</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -83,14 +84,27 @@ function ScanResult({ scan }: { scan: LastScan }) {
               <TableCell className="font-mono">{component.version}</TableCell>
               <TableCell className="font-mono">{component.releaseCycle}</TableCell>
               <TableCell>
-                <StatusBadge status={component.status} />
+                <div className="flex flex-col items-start gap-1">
+                  <StatusBadge status={component.status} />
+                  {component.datesDisagree && (
+                    <Badge variant="outline" className="border-amber-500 text-amber-700 dark:text-amber-400">
+                      <TriangleAlert />
+                      Sources disagree
+                    </Badge>
+                  )}
+                </div>
               </TableCell>
               <TableCell>{component.cycleReleaseDate}</TableCell>
               <TableCell>{component.activeSupportEnd}</TableCell>
               <TableCell>
                 <EndOfLife component={component} />
+                <SourceDates component={component} field="endOfLife" />
               </TableCell>
-              <TableCell>{component.extendedSupportEnd}</TableCell>
+              <TableCell>
+                {component.extendedSupportEnd}
+                <SourceDates component={component} field="extendedSupportEnd" />
+              </TableCell>
+              <TableCell>{component.extendedSupport}</TableCell>
             </TableRow>
           ))}
         </TableBody>
@@ -103,6 +117,24 @@ function EndOfLife({ component }: { component: ComponentRow }) {
   if (component.endOfLife !== undefined) return component.endOfLife;
   if (component.status === "Current") return <span className="text-muted-foreground">End of life not announced</span>;
   return null;
+}
+
+// Each source's own date for `field`, under the one that decides Status, for
+// the sources that give one.
+function SourceDates({ component, field }: { component: ComponentRow; field: keyof SupportDates }) {
+  const dates = Object.entries(component.sources).flatMap(([source, dates]) =>
+    dates[field] === undefined ? [] : [{ source, date: dates[field] }],
+  );
+  if (dates.length === 0) return null;
+  return (
+    <ul className="text-xs text-muted-foreground">
+      {dates.map(({ source, date }) => (
+        <li key={source}>
+          {source === "aws" ? "AWS" : source} {date}
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 const STATUS_CLASSES: Record<Status, string> = {

@@ -3,7 +3,7 @@ import { AwsCliError, type AwsRunner } from "../aws/runner.ts";
 import { openStore } from "../data/store.ts";
 import type { EndOfLifeFetcher } from "../endoflife/fetcher.ts";
 import { openReleaseCycles } from "../endoflife/release-cycles.ts";
-import type { ComponentRow, LastScan, PageModel } from "./page-model.ts";
+import type { ComponentRow, LastScan, PageModel, SupportDates } from "./page-model.ts";
 import { runScan, type Scan } from "./scan.ts";
 import { STATUSES, statusOf } from "./status.ts";
 
@@ -86,17 +86,31 @@ export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions
 
 // The last Scan as the dashboard shows it on `now`'s date: each Component's
 // Status, sorted by Status and then by soonest End of life, and counted.
+// Where AWS gives a date, it decides over endoflife.date's.
 function lastScanOf(scan: Scan, now: Date): LastScan {
   const today = now.toISOString().slice(0, 10);
-  const components = scan.components.map(({ releaseCycle, ...component }): ComponentRow => ({
-    ...component,
-    releaseCycle: releaseCycle?.name,
-    status: statusOf(releaseCycle, today),
-    cycleReleaseDate: releaseCycle?.releaseDate,
-    activeSupportEnd: releaseCycle?.activeSupportEnd,
-    endOfLife: releaseCycle?.endOfLife,
-    extendedSupportEnd: releaseCycle?.extendedSupportEnd,
-  }));
+  const components = scan.components.map(({ releaseCycle, awsLifecycle: aws = {}, ...component }): ComponentRow => {
+    const fromEndOfLifeDate: SupportDates = {
+      endOfLife: releaseCycle?.endOfLife,
+      extendedSupportEnd: releaseCycle?.extendedSupportEnd,
+    };
+    const deciding = releaseCycle && {
+      ...releaseCycle,
+      endOfLife: aws.endOfLife ?? fromEndOfLifeDate.endOfLife,
+      extendedSupportEnd: aws.extendedSupportEnd ?? fromEndOfLifeDate.extendedSupportEnd,
+    };
+    return {
+      ...component,
+      releaseCycle: deciding?.name,
+      status: statusOf(deciding, today),
+      cycleReleaseDate: deciding?.releaseDate,
+      activeSupportEnd: deciding?.activeSupportEnd,
+      endOfLife: deciding?.endOfLife,
+      extendedSupportEnd: deciding?.extendedSupportEnd,
+      sources: { aws, "endoflife.date": fromEndOfLifeDate },
+      datesDisagree: disagree(aws, fromEndOfLifeDate),
+    };
+  });
   components.sort(
     (a, b) =>
       STATUSES.indexOf(a.status) - STATUSES.indexOf(b.status) ||
@@ -106,6 +120,13 @@ function lastScanOf(scan: Scan, now: Date): LastScan {
     STATUSES.map((status) => [status, components.filter((component) => component.status === status).length]),
   ) as LastScan["counts"];
   return { ranAt: scan.ranAt, counts, components };
+}
+
+// Whether two sources both give a date for the same thing and the dates
+// differ.
+function disagree(a: SupportDates, b: SupportDates): boolean {
+  const differ = (x: string | undefined, y: string | undefined) => x !== undefined && y !== undefined && x !== y;
+  return differ(a.endOfLife, b.endOfLife) || differ(a.extendedSupportEnd, b.extendedSupportEnd);
 }
 
 // Dates in order, with no date last.

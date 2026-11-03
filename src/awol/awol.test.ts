@@ -22,6 +22,12 @@ import listRegions from "./fixtures/account-list-regions.json" with { type: "jso
 // to the fields that identify nothing and renamed db-1 to db-5. Every other
 // enabled region answered with no instances.
 import describeDbInstances from "./fixtures/rds-describe-db-instances.json" with { type: "json" };
+// Recorded from `aws rds describe-db-major-engine-versions --region eu-west-1
+// --engine <engine> --output json` on 2026-11-03. The answer is the same for
+// every account.
+import postgresMajorVersions from "./fixtures/rds-describe-db-major-engine-versions/postgres.json" with { type: "json" };
+import mysqlMajorVersions from "./fixtures/rds-describe-db-major-engine-versions/mysql.json" with { type: "json" };
+import mariadbMajorVersions from "./fixtures/rds-describe-db-major-engine-versions/mariadb.json" with { type: "json" };
 // Recorded from endoflife.date's API on 2026-11-03.
 import rdsPostgresql from "./fixtures/endoflife/amazon-rds-postgresql.json" with { type: "json" };
 import rdsMysql from "./fixtures/endoflife/amazon-rds-mysql.json" with { type: "json" };
@@ -231,7 +237,22 @@ function describeDbInstancesIn(region: string) {
   return `rds describe-db-instances --region ${region} --output json`;
 }
 
-type DbInstance = (typeof describeDbInstances.DBInstances)[number] & { DBClusterIdentifier?: string };
+// AWS's lifecycle answers by Engine, recorded in eu-west-1 and replayed for
+// every region.
+const MAJOR_VERSIONS: Record<string, unknown> = {
+  postgres: postgresMajorVersions,
+  mysql: mysqlMajorVersions,
+  mariadb: mariadbMajorVersions,
+};
+
+function describeMajorVersionsIn(region: string, engine: string) {
+  return `rds describe-db-major-engine-versions --region ${region} --engine ${engine} --output json`;
+}
+
+type DbInstance = Omit<(typeof describeDbInstances.DBInstances)[number], "EngineLifecycleSupport"> & {
+  DBClusterIdentifier?: string;
+  EngineLifecycleSupport?: string;
+};
 
 // The recorded instance db-5, PostgreSQL 17.9, given another identifier and
 // the fields in `changes`, the way a second instance would differ.
@@ -242,10 +263,12 @@ function instance(identifier: string, changes: Partial<DbInstance> = {}): DbInst
 type AccountContents = {
   regions?: { RegionName: string; RegionOptStatus: string }[];
   instances?: Record<string, DbInstance[]>;
+  majorVersions?: Record<string, unknown>;
 };
 
-// The recorded account, signed in: its regions, and its RDS instances by
-// region, where every enabled region not given has none. A region with no
+// The recorded account, signed in: its regions, its RDS instances by region,
+// where every enabled region not given has none, and AWS's RDS lifecycles by
+// Engine in each region, the recorded ones unless given. A region with no
 // answer fails the Scan.
 function account(contents: AccountContents = {}) {
   return fakeAws(accountAnswers(contents));
@@ -254,6 +277,7 @@ function account(contents: AccountContents = {}) {
 function accountAnswers({
   regions = listRegions.Regions,
   instances = { "eu-west-1": describeDbInstances.DBInstances },
+  majorVersions = MAJOR_VERSIONS,
 }: AccountContents = {}): Record<string, Answer> {
   const answers: Record<string, Answer> = {
     [CALLER_IDENTITY]: SIGNED_IN,
@@ -261,6 +285,9 @@ function accountAnswers({
   };
   for (const region of [...ENABLED_REGIONS, ...Object.keys(instances)]) {
     answers[describeDbInstancesIn(region)] = { stdout: JSON.stringify({ DBInstances: instances[region] ?? [] }) };
+    for (const [engine, answer] of Object.entries(majorVersions)) {
+      answers[describeMajorVersionsIn(region, engine)] = { stdout: JSON.stringify(answer) };
+    }
   }
   return answers;
 }
@@ -284,12 +311,18 @@ describe("a Scan", () => {
             region: "eu-west-1",
             identifier: "db-1",
             version: "8.0.46-rds.20260624",
+            extendedSupport: "Extended Support",
             releaseCycle: "8.0.46",
             status: "AWOL",
             cycleReleaseDate: "2026-04-21",
             activeSupportEnd: "2026-07-31",
             endOfLife: "2026-07-31",
             extendedSupportEnd: "2029-07-31",
+            sources: {
+              aws: { endOfLife: "2026-07-31", extendedSupportEnd: "2029-07-31" },
+              "endoflife.date": { endOfLife: "2026-07-31", extendedSupportEnd: "2029-07-31" },
+            },
+            datesDisagree: false,
           },
           {
             service: "RDS",
@@ -297,11 +330,17 @@ describe("a Scan", () => {
             region: "eu-west-1",
             identifier: "db-2",
             version: "14.19",
+            extendedSupport: "Extended Support",
             releaseCycle: "14",
             status: "Falling behind",
             cycleReleaseDate: "2022-02-03",
             endOfLife: "2027-02-28",
             extendedSupportEnd: "2030-02-28",
+            sources: {
+              aws: { endOfLife: "2027-02-28", extendedSupportEnd: "2030-02-28" },
+              "endoflife.date": { endOfLife: "2027-02-28", extendedSupportEnd: "2030-02-28" },
+            },
+            datesDisagree: false,
           },
           {
             service: "RDS",
@@ -309,11 +348,17 @@ describe("a Scan", () => {
             region: "eu-west-1",
             identifier: "db-3",
             version: "14.22",
+            extendedSupport: "auto-upgrade at End of life",
             releaseCycle: "14",
             status: "Falling behind",
             cycleReleaseDate: "2022-02-03",
             endOfLife: "2027-02-28",
             extendedSupportEnd: "2030-02-28",
+            sources: {
+              aws: { endOfLife: "2027-02-28", extendedSupportEnd: "2030-02-28" },
+              "endoflife.date": { endOfLife: "2027-02-28", extendedSupportEnd: "2030-02-28" },
+            },
+            datesDisagree: false,
           },
           {
             service: "RDS",
@@ -321,11 +366,17 @@ describe("a Scan", () => {
             region: "eu-west-1",
             identifier: "db-4",
             version: "16.13",
+            extendedSupport: "Extended Support",
             releaseCycle: "16",
             status: "Current",
             cycleReleaseDate: "2023-11-17",
             endOfLife: "2029-02-28",
             extendedSupportEnd: "2032-02-29",
+            sources: {
+              aws: { endOfLife: "2029-02-28", extendedSupportEnd: "2032-02-29" },
+              "endoflife.date": { endOfLife: "2029-02-28", extendedSupportEnd: "2032-02-29" },
+            },
+            datesDisagree: false,
           },
           {
             service: "RDS",
@@ -333,11 +384,17 @@ describe("a Scan", () => {
             region: "eu-west-1",
             identifier: "db-5",
             version: "17.9",
+            extendedSupport: "Extended Support",
             releaseCycle: "17",
             status: "Current",
             cycleReleaseDate: "2024-11-14",
             endOfLife: "2030-02-28",
             extendedSupportEnd: "2033-02-28",
+            sources: {
+              aws: { endOfLife: "2030-02-28", extendedSupportEnd: "2033-02-28" },
+              "endoflife.date": { endOfLife: "2030-02-28", extendedSupportEnd: "2033-02-28" },
+            },
+            datesDisagree: false,
           },
         ],
       },
@@ -496,15 +553,21 @@ describe("a Scan", () => {
   });
 
   it("shows a Component whose Release Cycle has no End of life announced as Current, with no End of life", async () => {
-    // The recorded PostgreSQL product, with End of life and Extended Support
-    // not yet announced for 18, as for a newly released cycle.
+    // The recorded PostgreSQL product and AWS lifecycles, with End of life and
+    // Extended Support not yet announced for 18, as for a newly released
+    // cycle.
     const unannounced = structuredClone(rdsPostgresql);
     Object.assign(unannounced.result.releases[0]!, { isEol: false, eolFrom: null, isEoes: false, eoesFrom: null });
     const endOfLife = fakeEndOfLife({
       ...RECORDED_PRODUCTS,
       "amazon-rds-postgresql": { etag: '"unannounced"', body: unannounced },
     });
-    const aws = account({ instances: { "eu-west-1": [instance("db-6", { EngineVersion: "18.1" })] } });
+    const awsUnannounced = structuredClone(postgresMajorVersions);
+    awsUnannounced.DBMajorEngineVersions.find(({ MajorEngineVersion }) => MajorEngineVersion === "18")!.SupportedEngineLifecycles = [];
+    const aws = account({
+      instances: { "eu-west-1": [instance("db-6", { EngineVersion: "18.1" })] },
+      majorVersions: { ...MAJOR_VERSIONS, postgres: awsUnannounced },
+    });
     const farFuture = new Date("2040-01-01T12:00:00Z");
 
     await awol(aws, farFuture, endOfLife).scan();
@@ -517,9 +580,12 @@ describe("a Scan", () => {
       region: "eu-west-1",
       identifier: "db-6",
       version: "18.1",
+      extendedSupport: "Extended Support",
       releaseCycle: "18",
       status: "Current",
       cycleReleaseDate: "2025-11-14",
+      sources: { aws: {}, "endoflife.date": {} },
+      datesDisagree: false,
     });
     expectOnlyJsonReads(aws);
   });
@@ -596,5 +662,173 @@ describe("a Scan", () => {
     });
     expectOnlyJsonReads(signedIn);
     expectOnlyJsonReads(expired);
+  });
+});
+
+describe("AWS's support dates for RDS", () => {
+  // The page's one Component after a Scan on `now` of an account with only
+  // `changes` applied to the recorded instance db-5, and AWS's RDS lifecycles
+  // by Engine, the recorded ones unless given; and the fake runner, to check
+  // last.
+  async function scannedComponent(
+    changes: Partial<DbInstance>,
+    { now = NOW, majorVersions = MAJOR_VERSIONS }: { now?: Date; majorVersions?: Record<string, unknown> } = {},
+  ) {
+    const aws = account({ instances: { "eu-west-1": [instance("db-6", changes)] }, majorVersions });
+    await awol(aws, now).scan();
+    const model = await awol(aws, now).pageModel();
+    if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+    return { component: model.lastScan!.components[0]!, aws };
+  }
+
+  it.each([
+    // AWS ends standard support for MariaDB 11.8 on 2030-06-30, endoflife.date
+    // on 2028-06-30.
+    ["11.8.3", "2028-07-01", "2030-06-30", "Current"],
+    // AWS ends standard support for MariaDB 10.5 on 2026-02-28, endoflife.date
+    // on 2026-08-31.
+    ["10.5.29", "2026-04-01", "2026-02-28", "AWOL"],
+  ])("decides Status with AWS's End of life over endoflife.date's: MariaDB %s on %s", async (version, date, endOfLife, status) => {
+    const { component, aws } = await scannedComponent(
+      { Engine: "mariadb", EngineVersion: version },
+      { now: new Date(`${date}T12:00:00Z`) },
+    );
+
+    expect(component).toMatchObject({ endOfLife, status });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows both sources' dates, marking the row where they disagree", async () => {
+    const { component, aws } = await scannedComponent({ Engine: "mariadb", EngineVersion: "11.8.3" });
+
+    expect(component).toMatchObject({
+      endOfLife: "2030-06-30",
+      sources: { aws: { endOfLife: "2030-06-30" }, "endoflife.date": { endOfLife: "2028-06-30" } },
+      datesDisagree: true,
+    });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows AWS's end of Extended Support over endoflife.date's, marking the row", async () => {
+    // The recorded MySQL lifecycles, with Extended Support for 8.0 ending a
+    // year later than endoflife.date's 2029-07-31.
+    const later = structuredClone(mysqlMajorVersions);
+    later.DBMajorEngineVersions.find(({ MajorEngineVersion }) => MajorEngineVersion === "8.0")!.SupportedEngineLifecycles[1]!.LifecycleSupportEndDate =
+      "2030-07-31T23:59:59.999000+00:00";
+
+    const { component, aws } = await scannedComponent(
+      { Engine: "mysql", EngineVersion: "8.0.46-rds.20260624" },
+      { majorVersions: { ...MAJOR_VERSIONS, mysql: later } },
+    );
+
+    expect(component).toMatchObject({
+      endOfLife: "2026-07-31",
+      extendedSupportEnd: "2030-07-31",
+      sources: {
+        aws: { endOfLife: "2026-07-31", extendedSupportEnd: "2030-07-31" },
+        "endoflife.date": { endOfLife: "2026-07-31", extendedSupportEnd: "2029-07-31" },
+      },
+      datesDisagree: true,
+    });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("reads AWS's dates in each Component's own region", async () => {
+    // The recorded PostgreSQL lifecycles, with standard support for 17 ending
+    // a year later in us-west-2 only.
+    const later = structuredClone(postgresMajorVersions);
+    later.DBMajorEngineVersions.find(({ MajorEngineVersion }) => MajorEngineVersion === "17")!.SupportedEngineLifecycles[0]!.LifecycleSupportEndDate =
+      "2031-02-28T23:59:59.999000+00:00";
+    const instances = { "eu-west-1": [instance("db-6")], "us-west-2": [instance("db-7")] };
+    const aws = fakeAws({
+      ...accountAnswers({ instances }),
+      [describeMajorVersionsIn("us-west-2", "postgres")]: { stdout: JSON.stringify(later) },
+    });
+
+    await awol(aws).scan();
+
+    const model = await awol(aws).pageModel();
+    expect(model.kind === "signed-in" && model.lastScan?.components.map(({ identifier, endOfLife }) => ({ identifier, endOfLife }))).toEqual([
+      { identifier: "db-6", endOfLife: "2030-02-28" },
+      { identifier: "db-7", endOfLife: "2031-02-28" },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows MariaDB, which AWS gives standard support only, with no end of Extended Support and no setting", async () => {
+    const { component, aws } = await scannedComponent({
+      Engine: "mariadb",
+      EngineVersion: "10.11.15",
+      EngineLifecycleSupport: "open-source-rds-extended-support",
+    });
+
+    expect(component).toMatchObject({
+      endOfLife: "2028-02-29",
+      extendedSupportEnd: undefined,
+      sources: { aws: { endOfLife: "2028-02-29" }, "endoflife.date": { endOfLife: "2028-02-29" } },
+      datesDisagree: false,
+    });
+    expect(component.sources.aws.extendedSupportEnd).toBeUndefined();
+    expect(component.extendedSupport).toBeUndefined();
+    expectOnlyJsonReads(aws);
+  });
+
+  it.each([
+    // AWS lists MariaDB 12.3 with no support dates.
+    ["mariadb", "12.3.3", "2029-06-30", "Current"],
+    // AWS no longer lists PostgreSQL 9.6.
+    ["postgres", "9.6.24", "2022-04-30", "AWOL"],
+  ])("decides Status with endoflife.date's End of life where AWS gives none: %s %s", async (engine, version, endOfLife, status) => {
+    const { component, aws } = await scannedComponent({ Engine: engine, EngineVersion: version });
+
+    expect(component).toMatchObject({
+      endOfLife,
+      status,
+      sources: { "endoflife.date": { endOfLife } },
+      datesDisagree: false,
+    });
+    expect(component.sources.aws.endOfLife).toBeUndefined();
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows each Component's Extended Support setting, and one on Extended Support as AWOL", async () => {
+    const aws = account();
+
+    await awol(aws).scan();
+
+    const model = await awol(aws).pageModel();
+    expect(model.kind === "signed-in" && model.lastScan?.components.map(({ identifier, status, extendedSupport }) => ({ identifier, status, extendedSupport }))).toEqual([
+      // MySQL 8.0 left standard support on 2026-07-31.
+      { identifier: "db-1", status: "AWOL", extendedSupport: "Extended Support" },
+      { identifier: "db-2", status: "Falling behind", extendedSupport: "Extended Support" },
+      { identifier: "db-3", status: "Falling behind", extendedSupport: "auto-upgrade at End of life" },
+      { identifier: "db-4", status: "Current", extendedSupport: "Extended Support" },
+      { identifier: "db-5", status: "Current", extendedSupport: "Extended Support" },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows a Component set to auto-upgrade as AWOL past End of life too", async () => {
+    // PostgreSQL 13 left standard support on 2026-02-28.
+    const { component, aws } = await scannedComponent({
+      EngineVersion: "13.22",
+      EngineLifecycleSupport: "open-source-rds-extended-support-disabled",
+    });
+
+    expect(component).toMatchObject({ status: "AWOL", extendedSupport: "auto-upgrade at End of life" });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("does not mark a row whose sources agree", async () => {
+    const { component, aws } = await scannedComponent({ EngineVersion: "14.22" });
+
+    expect(component).toMatchObject({
+      sources: {
+        aws: { endOfLife: "2027-02-28", extendedSupportEnd: "2030-02-28" },
+        "endoflife.date": { endOfLife: "2027-02-28", extendedSupportEnd: "2030-02-28" },
+      },
+      datesDisagree: false,
+    });
+    expectOnlyJsonReads(aws);
   });
 });
