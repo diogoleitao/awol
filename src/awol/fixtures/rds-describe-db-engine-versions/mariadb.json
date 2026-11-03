@@ -1,0 +1,31 @@
+{
+  "DBEngineVersions": [
+    { "Engine": "mariadb", "EngineVersion": "10.5.28", "MajorEngineVersion": "10.5", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "10.5.29", "MajorEngineVersion": "10.5", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "10.6.22", "MajorEngineVersion": "10.6", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "10.6.23", "MajorEngineVersion": "10.6", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "10.6.24", "MajorEngineVersion": "10.6", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "10.6.25", "MajorEngineVersion": "10.6", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "10.6.27", "MajorEngineVersion": "10.6", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "10.6.28", "MajorEngineVersion": "10.6", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "10.11.13", "MajorEngineVersion": "10.11", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "10.11.14", "MajorEngineVersion": "10.11", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "10.11.15", "MajorEngineVersion": "10.11", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "10.11.16", "MajorEngineVersion": "10.11", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "10.11.18", "MajorEngineVersion": "10.11", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "10.11.19", "MajorEngineVersion": "10.11", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "11.4.7", "MajorEngineVersion": "11.4", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "11.4.8", "MajorEngineVersion": "11.4", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "11.4.9", "MajorEngineVersion": "11.4", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "11.4.10", "MajorEngineVersion": "11.4", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "11.4.12", "MajorEngineVersion": "11.4", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "11.4.13", "MajorEngineVersion": "11.4", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "11.8.3", "MajorEngineVersion": "11.8", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "11.8.5", "MajorEngineVersion": "11.8", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "11.8.6", "MajorEngineVersion": "11.8", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "11.8.8", "MajorEngineVersion": "11.8", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "11.8.9", "MajorEngineVersion": "11.8", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "12.3.2", "MajorEngineVersion": "12.3", "Status": "available" },
+    { "Engine": "mariadb", "EngineVersion": "12.3.3", "MajorEngineVersion": "12.3", "Status": "available" }
+  ]
+}

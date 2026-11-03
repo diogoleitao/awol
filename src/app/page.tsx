@@ -3,7 +3,7 @@ import { connection } from "next/server";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import type { ComponentRow, LastScan, SupportDates } from "../awol/page-model.ts";
+import type { ComponentDrift, ComponentRow, Drift, LastScan, SupportDates } from "../awol/page-model.ts";
 import { STATUSES, type Status } from "../awol/status.ts";
 import { appAwol } from "./app-awol.ts";
 import { ScanButton } from "./scan-button.tsx";
@@ -67,6 +67,7 @@ function ScanResult({ scan }: { scan: LastScan }) {
             <TableHead>Version</TableHead>
             <TableHead>Release Cycle</TableHead>
             <TableHead>Status</TableHead>
+            <TableHead>Drift</TableHead>
             <TableHead>Cycle released</TableHead>
             <TableHead>Active support ends</TableHead>
             <TableHead>End of life</TableHead>
@@ -93,6 +94,9 @@ function ScanResult({ scan }: { scan: LastScan }) {
                     </Badge>
                   )}
                 </div>
+              </TableCell>
+              <TableCell>
+                <DriftFigures drift={component.drift} />
               </TableCell>
               <TableCell>{component.cycleReleaseDate}</TableCell>
               <TableCell>{component.activeSupportEnd}</TableCell>
@@ -135,6 +139,31 @@ function SourceDates({ component, field }: { component: ComponentRow; field: key
       ))}
     </ul>
   );
+}
+
+const DRIFT_FIGURES: [keyof ComponentDrift, string][] = [
+  ["latestPatch", "Latest patch"],
+  ["newestCycle", "Newest cycle"],
+  ["newestOffered", "Newest offered"],
+];
+
+// Each Drift figure: the version the Component is behind, or that it has no
+// Drift there, or that the figure is not available.
+function DriftFigures({ drift }: { drift: ComponentDrift }) {
+  return (
+    <ul className="text-xs">
+      {DRIFT_FIGURES.map(([figure, label]) => (
+        <li key={figure}>
+          <span className="text-muted-foreground">{label}</span> <DriftValue drift={drift[figure]} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function DriftValue({ drift }: { drift: Drift }) {
+  if (drift.kind === "behind") return <span className="font-mono">{drift.version}</span>;
+  return <span className="text-muted-foreground">{drift.kind === "none" ? "no Drift" : "not available"}</span>;
 }
 
 const STATUS_CLASSES: Record<Status, string> = {

@@ -28,6 +28,12 @@ import describeDbInstances from "./fixtures/rds-describe-db-instances.json" with
 import postgresMajorVersions from "./fixtures/rds-describe-db-major-engine-versions/postgres.json" with { type: "json" };
 import mysqlMajorVersions from "./fixtures/rds-describe-db-major-engine-versions/mysql.json" with { type: "json" };
 import mariadbMajorVersions from "./fixtures/rds-describe-db-major-engine-versions/mariadb.json" with { type: "json" };
+// Recorded from `aws rds describe-db-engine-versions --region eu-west-1
+// --engine <engine> --output json` on 2026-11-03, kept to the fields that
+// name each version. The answer is the same for every account.
+import postgresEngineVersions from "./fixtures/rds-describe-db-engine-versions/postgres.json" with { type: "json" };
+import mysqlEngineVersions from "./fixtures/rds-describe-db-engine-versions/mysql.json" with { type: "json" };
+import mariadbEngineVersions from "./fixtures/rds-describe-db-engine-versions/mariadb.json" with { type: "json" };
 // Recorded from endoflife.date's API on 2026-11-03.
 import rdsPostgresql from "./fixtures/endoflife/amazon-rds-postgresql.json" with { type: "json" };
 import rdsMysql from "./fixtures/endoflife/amazon-rds-mysql.json" with { type: "json" };
@@ -249,6 +255,18 @@ function describeMajorVersionsIn(region: string, engine: string) {
   return `rds describe-db-major-engine-versions --region ${region} --engine ${engine} --output json`;
 }
 
+// The versions AWS offers by Engine, recorded in eu-west-1 and replayed for
+// every region.
+const ENGINE_VERSIONS: Record<string, unknown> = {
+  postgres: postgresEngineVersions,
+  mysql: mysqlEngineVersions,
+  mariadb: mariadbEngineVersions,
+};
+
+function describeEngineVersionsIn(region: string, engine: string) {
+  return `rds describe-db-engine-versions --region ${region} --engine ${engine} --output json`;
+}
+
 type DbInstance = Omit<(typeof describeDbInstances.DBInstances)[number], "EngineLifecycleSupport"> & {
   DBClusterIdentifier?: string;
   EngineLifecycleSupport?: string;
@@ -264,12 +282,13 @@ type AccountContents = {
   regions?: { RegionName: string; RegionOptStatus: string }[];
   instances?: Record<string, DbInstance[]>;
   majorVersions?: Record<string, unknown>;
+  engineVersions?: Record<string, unknown>;
 };
 
 // The recorded account, signed in: its regions, its RDS instances by region,
-// where every enabled region not given has none, and AWS's RDS lifecycles by
-// Engine in each region, the recorded ones unless given. A region with no
-// answer fails the Scan.
+// where every enabled region not given has none, and AWS's RDS lifecycles and
+// offered versions by Engine in each region, the recorded ones unless given.
+// A region with no answer fails the Scan.
 function account(contents: AccountContents = {}) {
   return fakeAws(accountAnswers(contents));
 }
@@ -278,6 +297,7 @@ function accountAnswers({
   regions = listRegions.Regions,
   instances = { "eu-west-1": describeDbInstances.DBInstances },
   majorVersions = MAJOR_VERSIONS,
+  engineVersions = ENGINE_VERSIONS,
 }: AccountContents = {}): Record<string, Answer> {
   const answers: Record<string, Answer> = {
     [CALLER_IDENTITY]: SIGNED_IN,
@@ -288,8 +308,32 @@ function accountAnswers({
     for (const [engine, answer] of Object.entries(majorVersions)) {
       answers[describeMajorVersionsIn(region, engine)] = { stdout: JSON.stringify(answer) };
     }
+    for (const [engine, answer] of Object.entries(engineVersions)) {
+      answers[describeEngineVersionsIn(region, engine)] = { stdout: JSON.stringify(answer) };
+    }
   }
   return answers;
+}
+
+// The page's one Component after a Scan on `now` of an account with only
+// `changes` applied to the recorded instance db-5, and AWS's RDS lifecycles
+// and offered versions by Engine, the recorded ones unless given, read with
+// endoflife.date's recorded products unless given; and the fake runner, to
+// check last.
+async function scannedComponent(
+  changes: Partial<DbInstance>,
+  {
+    now = NOW,
+    majorVersions = MAJOR_VERSIONS,
+    engineVersions = ENGINE_VERSIONS,
+    endOfLife = fakeEndOfLife(),
+  }: { now?: Date; majorVersions?: Record<string, unknown>; engineVersions?: Record<string, unknown>; endOfLife?: EndOfLifeFetcher } = {},
+) {
+  const aws = account({ instances: { "eu-west-1": [instance("db-6", changes)] }, majorVersions, engineVersions });
+  await awol(aws, now, endOfLife).scan();
+  const model = await awol(aws, now, endOfLife).pageModel();
+  if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+  return { component: model.lastScan!.components[0]!, aws };
 }
 
 describe("a Scan", () => {
@@ -323,6 +367,11 @@ describe("a Scan", () => {
               "endoflife.date": { endOfLife: "2026-07-31", extendedSupportEnd: "2029-07-31" },
             },
             datesDisagree: false,
+            drift: {
+              latestPatch: { kind: "none" },
+              newestCycle: { kind: "behind", version: "8.4" },
+              newestOffered: { kind: "behind", version: "8.4.11" },
+            },
           },
           {
             service: "RDS",
@@ -341,6 +390,11 @@ describe("a Scan", () => {
               "endoflife.date": { endOfLife: "2027-02-28", extendedSupportEnd: "2030-02-28" },
             },
             datesDisagree: false,
+            drift: {
+              latestPatch: { kind: "behind", version: "14.24" },
+              newestCycle: { kind: "behind", version: "18" },
+              newestOffered: { kind: "behind", version: "18.6" },
+            },
           },
           {
             service: "RDS",
@@ -359,6 +413,11 @@ describe("a Scan", () => {
               "endoflife.date": { endOfLife: "2027-02-28", extendedSupportEnd: "2030-02-28" },
             },
             datesDisagree: false,
+            drift: {
+              latestPatch: { kind: "behind", version: "14.24" },
+              newestCycle: { kind: "behind", version: "18" },
+              newestOffered: { kind: "behind", version: "18.6" },
+            },
           },
           {
             service: "RDS",
@@ -377,6 +436,11 @@ describe("a Scan", () => {
               "endoflife.date": { endOfLife: "2029-02-28", extendedSupportEnd: "2032-02-29" },
             },
             datesDisagree: false,
+            drift: {
+              latestPatch: { kind: "behind", version: "16.15" },
+              newestCycle: { kind: "behind", version: "18" },
+              newestOffered: { kind: "behind", version: "18.6" },
+            },
           },
           {
             service: "RDS",
@@ -395,6 +459,11 @@ describe("a Scan", () => {
               "endoflife.date": { endOfLife: "2030-02-28", extendedSupportEnd: "2033-02-28" },
             },
             datesDisagree: false,
+            drift: {
+              latestPatch: { kind: "behind", version: "17.11" },
+              newestCycle: { kind: "behind", version: "18" },
+              newestOffered: { kind: "behind", version: "18.6" },
+            },
           },
         ],
       },
@@ -586,6 +655,11 @@ describe("a Scan", () => {
       cycleReleaseDate: "2025-11-14",
       sources: { aws: {}, "endoflife.date": {} },
       datesDisagree: false,
+      drift: {
+        latestPatch: { kind: "behind", version: "18.6" },
+        newestCycle: { kind: "none" },
+        newestOffered: { kind: "behind", version: "18.6" },
+      },
     });
     expectOnlyJsonReads(aws);
   });
@@ -666,21 +740,6 @@ describe("a Scan", () => {
 });
 
 describe("AWS's support dates for RDS", () => {
-  // The page's one Component after a Scan on `now` of an account with only
-  // `changes` applied to the recorded instance db-5, and AWS's RDS lifecycles
-  // by Engine, the recorded ones unless given; and the fake runner, to check
-  // last.
-  async function scannedComponent(
-    changes: Partial<DbInstance>,
-    { now = NOW, majorVersions = MAJOR_VERSIONS }: { now?: Date; majorVersions?: Record<string, unknown> } = {},
-  ) {
-    const aws = account({ instances: { "eu-west-1": [instance("db-6", changes)] }, majorVersions });
-    await awol(aws, now).scan();
-    const model = await awol(aws, now).pageModel();
-    if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
-    return { component: model.lastScan!.components[0]!, aws };
-  }
-
   it.each([
     // AWS ends standard support for MariaDB 11.8 on 2030-06-30, endoflife.date
     // on 2028-06-30.
@@ -828,6 +887,130 @@ describe("AWS's support dates for RDS", () => {
         "endoflife.date": { endOfLife: "2027-02-28", extendedSupportEnd: "2030-02-28" },
       },
       datesDisagree: false,
+    });
+    expectOnlyJsonReads(aws);
+  });
+});
+
+describe("Drift for RDS", () => {
+  it.each([
+    // endoflife.date's Latest patch of PostgreSQL 14 is 14.24.
+    ["postgres", "14.22", { kind: "behind", version: "14.24" }],
+    ["postgres", "14.24", { kind: "none" }],
+    // An RDS build of the Latest patch is on it: MySQL 8.0.46's is 8.0.46.
+    ["mysql", "8.0.46-rds.20260624", { kind: "none" }],
+    // MySQL 8.4.7 is its own Release Cycle within 8.4, whose Latest patch is
+    // 8.4.11.
+    ["mysql", "8.4.7", { kind: "behind", version: "8.4.11" }],
+    ["mysql", "8.4.10", { kind: "behind", version: "8.4.11" }],
+    ["mysql", "8.4.11", { kind: "none" }],
+    ["mariadb", "10.11.15", { kind: "behind", version: "10.11.19" }],
+  ])("shows %s %s's Drift from its Latest patch", async (engine, version, latestPatch) => {
+    const { component, aws } = await scannedComponent({ Engine: engine, EngineVersion: version });
+
+    expect(component.drift.latestPatch).toEqual(latestPatch);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows the Latest patch Drift as not available where endoflife.date gives no Latest patch", async () => {
+    // The recorded PostgreSQL product, with no Latest patch for 17.
+    const noLatest = structuredClone(rdsPostgresql);
+    noLatest.result.releases.find(({ name }) => name === "17")!.latest = null as never;
+    const endOfLife = fakeEndOfLife({ ...RECORDED_PRODUCTS, "amazon-rds-postgresql": { etag: '"no-latest"', body: noLatest } });
+
+    const { component, aws } = await scannedComponent({ EngineVersion: "17.9" }, { endOfLife });
+
+    expect(component.drift.latestPatch).toEqual({ kind: "not-available" });
+    expectOnlyJsonReads(aws);
+  });
+
+  it.each([
+    // The Newest cycle is the one with the highest Latest patch: PostgreSQL 18
+    // (18.6), MySQL 8.4 (8.4.11) and MariaDB 12.3 (12.3.3).
+    ["postgres", "17.9", { kind: "behind", version: "18" }],
+    ["postgres", "18.1", { kind: "none" }],
+    ["mysql", "8.0.46-rds.20260624", { kind: "behind", version: "8.4" }],
+    // MySQL 8.4.7 is its own Release Cycle, within 8.4.
+    ["mysql", "8.4.7", { kind: "none" }],
+    ["mysql", "8.4.10", { kind: "none" }],
+    ["mariadb", "11.8.3", { kind: "behind", version: "12.3" }],
+    ["mariadb", "12.3.2", { kind: "none" }],
+  ])("shows %s %s's Drift from the Newest cycle", async (engine, version, newestCycle) => {
+    const { component, aws } = await scannedComponent({ Engine: engine, EngineVersion: version });
+
+    expect(component.drift.newestCycle).toEqual(newestCycle);
+    expectOnlyJsonReads(aws);
+  });
+
+  it.each([
+    // AWS offers up to PostgreSQL 18.6, MySQL 8.4.11 and MariaDB 12.3.3 in
+    // eu-west-1.
+    ["postgres", "17.9", { kind: "behind", version: "18.6" }],
+    ["postgres", "18.6", { kind: "none" }],
+    ["mysql", "8.0.46-rds.20260624", { kind: "behind", version: "8.4.11" }],
+    ["mysql", "8.4.11", { kind: "none" }],
+    ["mariadb", "11.8.3", { kind: "behind", version: "12.3.3" }],
+    ["mariadb", "12.3.3", { kind: "none" }],
+  ])("shows %s %s's Drift from the Newest offered version", async (engine, version, newestOffered) => {
+    const { component, aws } = await scannedComponent({ Engine: engine, EngineVersion: version });
+
+    expect(component.drift.newestOffered).toEqual(newestOffered);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("reads the Newest offered version in each Component's own region", async () => {
+    // The recorded PostgreSQL versions, with nothing past 18.4 offered in
+    // us-west-2.
+    const older = structuredClone(postgresEngineVersions);
+    older.DBEngineVersions = older.DBEngineVersions.filter(({ EngineVersion }) => EngineVersion !== "18.6");
+    const instances = { "eu-west-1": [instance("db-6", { EngineVersion: "18.4" })], "us-west-2": [instance("db-7", { EngineVersion: "18.4" })] };
+    const aws = fakeAws({
+      ...accountAnswers({ instances }),
+      [describeEngineVersionsIn("us-west-2", "postgres")]: { stdout: JSON.stringify(older) },
+    });
+
+    await awol(aws).scan();
+
+    const model = await awol(aws).pageModel();
+    expect(model.kind === "signed-in" && model.lastScan?.components.map(({ identifier, drift }) => ({ identifier, newestOffered: drift.newestOffered }))).toEqual([
+      { identifier: "db-6", newestOffered: { kind: "behind", version: "18.6" } },
+      { identifier: "db-7", newestOffered: { kind: "none" } },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows no Drift for a Component on the Latest patch, the Newest cycle and the Newest offered version", async () => {
+    const { component, aws } = await scannedComponent({ EngineVersion: "18.6" });
+
+    expect(component.drift).toEqual({ latestPatch: { kind: "none" }, newestCycle: { kind: "none" }, newestOffered: { kind: "none" } });
+    expectOnlyJsonReads(aws);
+  });
+
+  it.each([
+    // Behind every figure, on its Latest patch only, and behind none.
+    ["17.5", "Current"],
+    ["17.11", "Current"],
+    ["18.6", "Current"],
+    // On its Latest patch, and past End of life.
+    ["13.23", "AWOL"],
+  ])("never changes Status: PostgreSQL %s is %s", async (version, status) => {
+    const { component, aws } = await scannedComponent({ EngineVersion: version });
+
+    expect(component.status).toBe(status);
+    expectOnlyJsonReads(aws);
+  });
+
+  it.each([
+    ["postgres", "19.1"],
+    ["mysql", "9.4.0"],
+    ["mariadb", "12.4.1"],
+  ])("shows %s %s, which matches no Release Cycle, with Drift from the Newest offered version only", async (engine, version) => {
+    const { component, aws } = await scannedComponent({ Engine: engine, EngineVersion: version });
+
+    expect(component.drift).toEqual({
+      latestPatch: { kind: "not-available" },
+      newestCycle: { kind: "not-available" },
+      newestOffered: { kind: "none" },
     });
     expectOnlyJsonReads(aws);
   });

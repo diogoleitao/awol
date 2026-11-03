@@ -3,7 +3,7 @@ import { AwsCliError, type AwsRunner } from "../aws/runner.ts";
 import { openStore } from "../data/store.ts";
 import type { EndOfLifeFetcher } from "../endoflife/fetcher.ts";
 import { openReleaseCycles } from "../endoflife/release-cycles.ts";
-import type { ComponentRow, LastScan, PageModel, SupportDates } from "./page-model.ts";
+import type { ComponentDrift, ComponentRow, LastScan, PageModel, SupportDates } from "./page-model.ts";
 import { runScan, type Scan } from "./scan.ts";
 import { STATUSES, statusOf } from "./status.ts";
 
@@ -89,7 +89,7 @@ export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions
 // Where AWS gives a date, it decides over endoflife.date's.
 function lastScanOf(scan: Scan, now: Date): LastScan {
   const today = now.toISOString().slice(0, 10);
-  const components = scan.components.map(({ releaseCycle, awsLifecycle: aws = {}, ...component }): ComponentRow => {
+  const components = scan.components.map(({ releaseCycle, awsLifecycle: aws = {}, drift = NO_DRIFT, ...component }): ComponentRow => {
     const fromEndOfLifeDate: SupportDates = {
       endOfLife: releaseCycle?.endOfLife,
       extendedSupportEnd: releaseCycle?.extendedSupportEnd,
@@ -109,6 +109,7 @@ function lastScanOf(scan: Scan, now: Date): LastScan {
       extendedSupportEnd: deciding?.extendedSupportEnd,
       sources: { aws, "endoflife.date": fromEndOfLifeDate },
       datesDisagree: disagree(aws, fromEndOfLifeDate),
+      drift,
     };
   });
   components.sort(
@@ -121,6 +122,13 @@ function lastScanOf(scan: Scan, now: Date): LastScan {
   ) as LastScan["counts"];
   return { ranAt: scan.ranAt, counts, components };
 }
+
+// The Drift of a Component in a Scan from before awol read Drift.
+const NO_DRIFT: ComponentDrift = {
+  latestPatch: { kind: "not-available" },
+  newestCycle: { kind: "not-available" },
+  newestOffered: { kind: "not-available" },
+};
 
 // Whether two sources both give a date for the same thing and the dates
 // differ.

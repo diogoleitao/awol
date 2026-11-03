@@ -3,10 +3,11 @@ import path from "node:path";
 import { ifExists, writeFileAtomically } from "../fs.ts";
 import type { EndOfLifeFetcher } from "./fetcher.ts";
 
-// One Release Cycle of a Product as endoflife.date gives it, with the dates it
-// has.
+// One Release Cycle of a Product as endoflife.date gives it, with its Latest
+// patch and the dates it has.
 export type ReleaseCycle = {
   name: string;
+  latest?: string;
   releaseDate?: string;
   activeSupportEnd?: string;
   endOfLife?: string;
@@ -17,9 +18,17 @@ export type ReleaseCycle = {
 // back and to reuse on a 304.
 type CachedProduct = { etag: string; body: string };
 
-// One release in endoflife.date's API: `eoasFrom` is the end of Active
-// support, `eolFrom` End of life, and `eoesFrom` the end of Extended Support.
-type Release = { name: string; releaseDate?: unknown; eoasFrom?: unknown; eolFrom?: unknown; eoesFrom?: unknown };
+// One release in endoflife.date's API: `latest` is the Latest patch,
+// `eoasFrom` the end of Active support, `eolFrom` End of life, and `eoesFrom`
+// the end of Extended Support.
+type Release = {
+  name: string;
+  latest?: { name?: unknown } | null;
+  releaseDate?: unknown;
+  eoasFrom?: unknown;
+  eolFrom?: unknown;
+  eoesFrom?: unknown;
+};
 
 // The Release Cycles of endoflife.date's products, cached under
 // `endoflife/<product>.json` in the data directory. The cache is not per
@@ -46,6 +55,7 @@ export function openReleaseCycles(fetcher: EndOfLifeFetcher, dataDir: string) {
     const releases = (JSON.parse(body) as { result: { releases: Release[] } }).result.releases;
     return releases.map((release) => ({
       name: release.name,
+      latest: typeof release.latest?.name === "string" ? release.latest.name : undefined,
       releaseDate: date(release.releaseDate),
       activeSupportEnd: date(release.eoasFrom),
       endOfLife: date(release.eolFrom),

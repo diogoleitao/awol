@@ -1,0 +1,22 @@
+{
+  "DBEngineVersions": [
+    { "Engine": "mysql", "EngineVersion": "5.7.44-rds.20250213", "MajorEngineVersion": "5.7", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "5.7.44-rds.20250508", "MajorEngineVersion": "5.7", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "5.7.44-rds.20250818", "MajorEngineVersion": "5.7", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "5.7.44-rds.20251212", "MajorEngineVersion": "5.7", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "5.7.44-rds.20260212", "MajorEngineVersion": "5.7", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "5.7.44-rds.20260521", "MajorEngineVersion": "5.7", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "5.7.44-rds.20260624", "MajorEngineVersion": "5.7", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "5.7.44-rds.20260902", "MajorEngineVersion": "5.7", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "8.0.46", "MajorEngineVersion": "8.0", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "8.0.46-rds.20260624", "MajorEngineVersion": "8.0", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "8.0.46-rds.20260908", "MajorEngineVersion": "8.0", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "8.4.5", "MajorEngineVersion": "8.4", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "8.4.6", "MajorEngineVersion": "8.4", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "8.4.7", "MajorEngineVersion": "8.4", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "8.4.8", "MajorEngineVersion": "8.4", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "8.4.9", "MajorEngineVersion": "8.4", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "8.4.10", "MajorEngineVersion": "8.4", "Status": "available" },
+    { "Engine": "mysql", "EngineVersion": "8.4.11", "MajorEngineVersion": "8.4", "Status": "available" }
+  ]
+}

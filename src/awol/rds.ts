@@ -1,4 +1,5 @@
 import type { AwsRunner } from "../aws/runner.ts";
+import { compareVersions } from "./drift.ts";
 
 // A Product awol reads from RDS: its name, its endoflife.date product, the
 // Release Cycle names a version could match, most specific first, the AWS
@@ -24,7 +25,8 @@ export type SupportDates = {
 export type ExtendedSupport = "Extended Support" | "auto-upgrade at End of life";
 
 // One Component as a Scan read it from AWS, with AWS's support dates for its
-// AWS major version in its region.
+// AWS major version in its region and the Newest offered version of its
+// Product there, if AWS offers any.
 export type ComponentReading = {
   service: "RDS";
   product: Product;
@@ -33,6 +35,7 @@ export type ComponentReading = {
   version: string;
   extendedSupport?: ExtendedSupport;
   awsLifecycle: SupportDates;
+  newestOffered?: string;
 };
 
 // The Extended Support setting by EngineLifecycleSupport.
@@ -95,18 +98,21 @@ type DbInstance = {
 };
 
 // The RDS instances in `region` that are Components, each with AWS's support
-// dates for its AWS major version there. An instance in a DB cluster is not a
-// Component: its cluster is.
+// dates for its AWS major version there and the Newest offered version of its
+// Product there. An instance in a DB cluster is not a Component: its cluster
+// is.
 export async function readRdsInstances(aws: AwsRunner, region: string): Promise<ComponentReading[]> {
   const stdout = await aws(["rds", "describe-db-instances", "--region", region, "--output", "json"]);
   const instances = (JSON.parse(stdout) as { DBInstances: DbInstance[] }).DBInstances.filter(
     (instance) => PRODUCTS[instance.Engine] !== undefined && instance.DBClusterIdentifier === undefined,
   );
 
-  // One Engine at a time, so a region makes one call at once.
+  // One call at a time, so a region makes one call at once.
   const lifecyclesByEngine = new Map<string, Map<string, SupportDates>>();
+  const newestOfferedByEngine = new Map<string, string | undefined>();
   for (const engine of new Set(instances.map((instance) => instance.Engine))) {
     lifecyclesByEngine.set(engine, await readAwsLifecycles(aws, region, engine));
+    newestOfferedByEngine.set(engine, await readNewestOffered(aws, region, engine));
   }
 
   return instances.map((instance) => {
@@ -119,8 +125,19 @@ export async function readRdsInstances(aws: AwsRunner, region: string): Promise<
       version: instance.EngineVersion,
       extendedSupport: product.hasExtendedSupport ? EXTENDED_SUPPORT[instance.EngineLifecycleSupport ?? ""] : undefined,
       awsLifecycle: lifecyclesByEngine.get(instance.Engine)!.get(product.awsMajorVersion(instance.EngineVersion)) ?? {},
+      newestOffered: newestOfferedByEngine.get(instance.Engine),
     };
   });
+}
+
+// The highest version of `engine` AWS offers in `region`. Without
+// `--include-all`, AWS lists only available versions.
+async function readNewestOffered(aws: AwsRunner, region: string, engine: string): Promise<string | undefined> {
+  const stdout = await aws(["rds", "describe-db-engine-versions", "--region", region, "--engine", engine, "--output", "json"]);
+  const versions = (JSON.parse(stdout) as { DBEngineVersions: { EngineVersion: string }[] }).DBEngineVersions;
+  return versions
+    .map(({ EngineVersion }) => EngineVersion)
+    .reduce<string | undefined>((newest, version) => (newest === undefined || compareVersions(version, newest) > 0 ? version : newest), undefined);
 }
 
 type DbMajorEngineVersion = {

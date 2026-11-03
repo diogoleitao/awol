@@ -1,13 +1,18 @@
 import type { AwsRunner } from "../aws/runner.ts";
 import type { ReleaseCycle } from "../endoflife/release-cycles.ts";
+import { type Drift, driftFrom, driftFromCycle, withHighestLatestPatch } from "./drift.ts";
 import { type ExtendedSupport, readRdsInstances, type SupportDates } from "./rds.ts";
 
 // How many regions a Scan reads at once.
 const REGION_CONCURRENCY = 8;
 
+// The Drift a Scan found for one Component.
+export type ComponentDrift = { latestPatch: Drift; newestCycle: Drift; newestOffered: Drift };
+
 // One Component as a Scan stored it: what AWS reported, AWS's support dates
-// for its AWS major version, and the Release Cycle its version matched, if
-// any. A Scan from before awol read AWS's dates and settings has none.
+// for its AWS major version, the Release Cycle its version matched, if any,
+// and its Drift. A Scan from before awol read AWS's dates and settings has
+// none, and one from before it read Drift has no Drift.
 export type ScannedComponent = {
   service: "RDS";
   product: string;
@@ -17,6 +22,7 @@ export type ScannedComponent = {
   extendedSupport?: ExtendedSupport;
   awsLifecycle?: SupportDates;
   releaseCycle?: ReleaseCycle;
+  drift?: ComponentDrift;
 };
 
 export type Scan = {
@@ -43,13 +49,18 @@ export async function runScan(
 
   return {
     ranAt: now.toISOString(),
-    components: readings.map(({ product, ...reading }) => {
+    components: readings.map(({ product, newestOffered, ...reading }) => {
       const cycles = cyclesByProduct.get(product.endOfLifeProduct)!;
-      const releaseCycle = product
-        .cycleNames(reading.version)
-        .map((name) => cycles.find((cycle) => cycle.name === name))
-        .find((cycle) => cycle !== undefined);
-      return { ...reading, product: product.name, releaseCycle };
+      const cycleNames = product.cycleNames(reading.version);
+      // Every Release Cycle the version matches, most specific first.
+      const matched = cycleNames.flatMap((name) => cycles.filter((cycle) => cycle.name === name));
+      const releaseCycle = matched[0];
+      const drift = {
+        latestPatch: driftFrom(reading.version, withHighestLatestPatch(matched)?.latest),
+        newestCycle: driftFromCycle(releaseCycle, cycleNames, withHighestLatestPatch(cycles)),
+        newestOffered: driftFrom(reading.version, newestOffered),
+      };
+      return { ...reading, product: product.name, releaseCycle, drift };
     }),
   };
 }
