@@ -5,13 +5,17 @@
   "description": "A local, read-only dashboard of how far your AWS Components have drifted from their supported versions.",
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "awol": "dist/cli/main.js"
+  },
   "engines": {
     "node": ">=20"
   },
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1 --port 5151",
-    "build": "next build",
-    "typecheck": "tsc --noEmit",
+    "build": "next build && tsc -p tsconfig.cli.json",
+    "prepare": "npm run build",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.cli.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
