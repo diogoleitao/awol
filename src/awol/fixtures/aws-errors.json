@@ -1,0 +1,6 @@
+{
+  "accessDenied": "\nAn error occurred (AccessDenied) when calling the DescribeDBInstances operation: User: arn:aws:iam::123456789012:user/user-1 is not authorized to perform: rds:DescribeDBInstances on resource: arn:aws:rds:eu-west-1:123456789012:db:* because no identity-based policy allows the rds:DescribeDBInstances action\n",
+  "listRegionsAccessDenied": "\nAn error occurred (AccessDeniedException) when calling the ListRegions operation: User: arn:aws:iam::123456789012:user/user-1 is not authorized to perform: account:ListRegions because no identity-based policy allows the account:ListRegions action\n",
+  "throttling": "\nAn error occurred (Throttling) when calling the DescribeDBInstances operation (reached max retries: 2): Rate exceeded\n",
+  "notAvailable": "\nCould not connect to the endpoint URL: \"https://rds.eu-west-1.amazonaws.com/\"\n"
+}

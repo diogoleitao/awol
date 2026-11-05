@@ -79,6 +79,9 @@ const PRODUCTS: Record<string, RdsProduct> = {
   },
 };
 
+// Every RDS Product.
+export const RDS_PRODUCTS: Product[] = Object.values(PRODUCTS);
+
 function postgresMajor(version: string): string {
   const [major, minor] = version.split(".");
   return Number(major) < 10 ? `${major}.${minor}` : major!;

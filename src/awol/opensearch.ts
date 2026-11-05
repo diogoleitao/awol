@@ -8,6 +8,9 @@ const PRODUCTS: Record<string, Product> = {
   Elasticsearch: engineProduct("Elasticsearch", "amazon-elasticsearch"),
 };
 
+// Every OpenSearch Product.
+export const OPENSEARCH_PRODUCTS: Product[] = Object.values(PRODUCTS);
+
 // A Product matched by the `x.y` after its engine (`OpenSearch_2.11` to
 // `2.11`).
 function engineProduct(name: string, endOfLifeProduct: string): Product {

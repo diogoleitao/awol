@@ -4,7 +4,7 @@ import { openStore } from "../data/store.ts";
 import type { EndOfLifeFetcher } from "../endoflife/fetcher.ts";
 import { openReleaseCycles } from "../endoflife/release-cycles.ts";
 import type { ComponentDrift, ComponentRow, LastScan, PageModel, SupportDates } from "./page-model.ts";
-import { runScan, type Scan } from "./scan.ts";
+import { componentsOf, failedPartsOf, runScan, type Scan } from "./scan.ts";
 import { STATUSES, statusOf } from "./status.ts";
 
 export type Clock = { now(): Date };
@@ -62,7 +62,8 @@ export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions
     scan(): Promise<ScanOutcome> {
       return orLoginNeeded(async () => {
         const accountId = await identify();
-        const scan = await runScan(aws, releaseCycles, clock.now());
+        const { lastScan } = await store.account(accountId).load();
+        const scan = await runScan(aws, releaseCycles, clock.now(), lastScan);
         await store.account(accountId).update((state) => ({ ...state, lastScan: scan }));
         return { kind: "scanned" } as const;
       });
@@ -85,11 +86,12 @@ export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions
 }
 
 // The last Scan as the dashboard shows it on `now`'s date: each Component's
-// Status, sorted by Status and then by soonest End of life, and counted.
-// Where AWS gives a date, it decides over endoflife.date's.
+// Status, sorted by Status and then by soonest End of life, and counted, and
+// the parts that could not be read. Where AWS gives a date, it decides over
+// endoflife.date's.
 function lastScanOf(scan: Scan, now: Date): LastScan {
   const today = now.toISOString().slice(0, 10);
-  const components = scan.components.map(({ releaseCycle, awsLifecycle: aws = {}, drift = NO_DRIFT, ...component }): ComponentRow => {
+  const components = componentsOf(scan).map(({ releaseCycle, awsLifecycle: aws = {}, drift = NO_DRIFT, ...component }): ComponentRow => {
     const fromEndOfLifeDate: SupportDates = {
       endOfLife: releaseCycle?.endOfLife,
       extendedSupportEnd: releaseCycle?.extendedSupportEnd,
@@ -120,7 +122,7 @@ function lastScanOf(scan: Scan, now: Date): LastScan {
   const counts = Object.fromEntries(
     STATUSES.map((status) => [status, components.filter((component) => component.status === status).length]),
   ) as LastScan["counts"];
-  return { ranAt: scan.ranAt, counts, components };
+  return { ranAt: scan.ranAt, counts, components, failedParts: failedPartsOf(scan) };
 }
 
 // The Drift of a Component in a Scan from before awol read Drift.

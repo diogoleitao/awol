@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -14,6 +14,11 @@ import callerIdentity from "./fixtures/sts-get-caller-identity.json" with { type
 // SSO session that has expired, an SSO session never logged in to, and
 // expired temporary credentials.
 import credentialErrors from "./fixtures/credential-errors.json" with { type: "json" };
+// Written by hand from the `aws` CLI's messages, since recording them needs a
+// denied, throttled or unreachable call: AccessDenied for RDS and for the
+// account's regions, throttling past the CLI's retries, and a service with no
+// endpoint in the region.
+import awsErrors from "./fixtures/aws-errors.json" with { type: "json" };
 // Recorded from `aws account list-regions --output json`. The account has no
 // opted-in region, so tests that need one change a recorded status.
 import listRegions from "./fixtures/account-list-regions.json" with { type: "json" };
@@ -715,6 +720,7 @@ describe("a Scan", () => {
             },
           },
         ],
+        failedParts: [],
       },
     });
     expectOnlyJsonReads(aws);
@@ -985,6 +991,258 @@ describe("a Scan", () => {
     });
     expectOnlyJsonReads(signedIn);
     expectOnlyJsonReads(expired);
+  });
+});
+
+describe("a Scan that fails in part", () => {
+  const LATER = new Date("2026-11-04T08:30:00Z");
+
+  // The page's last Scan on `now`, read with endoflife.date's recorded
+  // products unless given.
+  async function lastScan(aws: AwsRunner, now = LATER, endOfLife: EndOfLifeFetcher = fakeEndOfLife()) {
+    const model = await awol(aws, now, endOfLife).pageModel();
+    if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+    return model.lastScan!;
+  }
+
+  // Each Component as its identifier, version and whether it is Stale.
+  function rows(scan: { components: { identifier: string; version?: string; stale?: { lastReadAt: string } }[] }) {
+    return scan.components.map(({ identifier, version, stale }) => ({ identifier, version, stale }));
+  }
+
+  it.each([
+    ["AccessDenied", awsErrors.accessDenied],
+    ["throttling", awsErrors.throttling],
+    ["the service not available in the region", awsErrors.notAvailable],
+  ])("keeps a service's previous result in a region it fails in with %s, Stale since its last successful read", async (_, stderr) => {
+    const before = account({
+      instances: { "eu-west-1": [instance("db-6")] },
+      functions: { "eu-west-1": [{ latest: lambdaFunction("function-6") }] },
+    });
+    await awol(before, NOW).scan();
+    // db-6 has been replaced by db-7 and function-6 moved to python3.13, but
+    // RDS fails in eu-west-1.
+    const after = fakeAws({
+      ...accountAnswers({
+        instances: { "eu-west-1": [instance("db-7")] },
+        functions: { "eu-west-1": [{ latest: lambdaFunction("function-6", { Runtime: "python3.13" }) }] },
+      }),
+      [describeDbInstancesIn("eu-west-1")]: { stderr },
+    });
+
+    await awol(after, LATER).scan();
+
+    const scan = await lastScan(after);
+    expect(scan.ranAt).toBe("2026-11-04T08:30:00.000Z");
+    expect(rows(scan)).toEqual([
+      { identifier: "function-6:$LATEST", version: "python3.13", stale: undefined },
+      { identifier: "db-6", version: "17.9", stale: { lastReadAt: "2026-11-03T12:00:00.000Z" } },
+    ]);
+    expect(scan.failedParts).toEqual([
+      {
+        part: { kind: "service", service: "RDS", region: "eu-west-1" },
+        error: stderr.trim(),
+        lastReadAt: "2026-11-03T12:00:00.000Z",
+      },
+    ]);
+    expectOnlyJsonReads(before);
+    expectOnlyJsonReads(after);
+  });
+
+  // endoflife.date failing for `product` with `failure`, an HTTP status or
+  // unreachable, and replaying the recorded products otherwise.
+  function failingEndOfLife(product: string, failure: number | "unreachable"): EndOfLifeFetcher {
+    const recorded = fakeEndOfLife();
+    return async (url, etag) => {
+      if (url !== `https://endoflife.date/api/v1/products/${product}`) return recorded(url, etag);
+      if (failure === "unreachable") throw new TypeError("fetch failed");
+      return { status: failure, body: "" };
+    };
+  }
+
+  it.each([
+    [429,"endoflife.date answered 429 for amazon-rds-postgresql"],
+    [502, "endoflife.date answered 502 for amazon-rds-postgresql"],
+    [503, "endoflife.date answered 503 for amazon-rds-postgresql"],
+    ["unreachable", "endoflife.date could not be reached for amazon-rds-postgresql: fetch failed"],
+  ] as const)(
+    "uses the cached copy of a product endoflife.date fails for with %s, Stale since its last successful read",
+    async (failure, error) => {
+      const aws = account({ instances: { "eu-west-1": [instance("db-6"), instance("db-7", { Engine: "mysql", EngineVersion: "8.4.7" })] } });
+      await awol(aws, NOW).scan();
+      const failing = failingEndOfLife("amazon-rds-postgresql", failure);
+
+      await awol(aws, LATER, failing).scan();
+
+      const scan = await lastScan(aws, LATER, failing);
+      expect(scan.components.map(({ identifier, releaseCycle, status, stale }) => ({ identifier, releaseCycle, status, stale }))).toEqual([
+        { identifier: "db-7", releaseCycle: "8.4.7", status: "Current", stale: undefined },
+        { identifier: "db-6", releaseCycle: "17", status: "Current", stale: { lastReadAt: "2026-11-03T12:00:00.000Z" } },
+      ]);
+      expect(scan.failedParts).toEqual([
+        { part: { kind: "endoflife.date", product: "amazon-rds-postgresql" }, error, lastReadAt: "2026-11-03T12:00:00.000Z" },
+      ]);
+      expectOnlyJsonReads(aws);
+    },
+  );
+
+  it("uses a copy kept before awol recorded when it read endoflife.date, Stale since the copy was written", async () => {
+    const aws = account({ instances: { "eu-west-1": [instance("db-6")] } });
+    // The copy as awol kept it before: its ETag and body only.
+    const cachePath = path.join(dir, "endoflife", "amazon-rds-postgresql.json");
+    await mkdir(path.dirname(cachePath), { recursive: true });
+    await writeFile(cachePath, JSON.stringify({ etag: RECORDED_PRODUCTS["amazon-rds-postgresql"]!.etag, body: JSON.stringify(rdsPostgresql) }));
+    await utimes(cachePath, NOW, NOW);
+    const failing = failingEndOfLife("amazon-rds-postgresql", 503);
+
+    await awol(aws, LATER, failing).scan();
+
+    const scan = await lastScan(aws, LATER, failing);
+    expect(scan.components).toMatchObject([
+      { identifier: "db-6", releaseCycle: "17", status: "Current", stale: { lastReadAt: "2026-11-03T12:00:00.000Z" } },
+    ]);
+    expect(scan.failedParts).toEqual([
+      {
+        part: { kind: "endoflife.date", product: "amazon-rds-postgresql" },
+        error: "endoflife.date answered 503 for amazon-rds-postgresql",
+        lastReadAt: "2026-11-03T12:00:00.000Z",
+      },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows the error of a service never read successfully in a region, instead of its Components", async () => {
+    const aws = fakeAws({
+      ...accountAnswers({
+        instances: { "eu-west-1": [instance("db-6")] },
+        functions: { "eu-west-1": [{ latest: lambdaFunction("function-6") }] },
+      }),
+      [describeDbInstancesIn("eu-west-1")]: { stderr: awsErrors.accessDenied },
+    });
+
+    await awol(aws, NOW).scan();
+
+    const scan = await lastScan(aws, NOW);
+    expect(rows(scan)).toEqual([{ identifier: "function-6:$LATEST", version: "python3.12", stale: undefined }]);
+    expect(scan.failedParts).toEqual([
+      { part: { kind: "service", service: "RDS", region: "eu-west-1" }, error: awsErrors.accessDenied.trim() },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows the Components of a product endoflife.date has never given as Untracked, with its error", async () => {
+    const aws = account({ instances: { "eu-west-1": [instance("db-6")] } });
+    const failing = failingEndOfLife("amazon-rds-postgresql", 503);
+
+    await awol(aws, NOW, failing).scan();
+
+    const scan = await lastScan(aws, NOW, failing);
+    expect(scan.components).toMatchObject([{ identifier: "db-6", releaseCycle: undefined, status: "Untracked" }]);
+    expect(scan.components[0]!.stale).toBeUndefined();
+    expect(scan.failedParts).toEqual([
+      { part: { kind: "endoflife.date", product: "amazon-rds-postgresql" }, error: "endoflife.date answered 503 for amazon-rds-postgresql" },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("reads the previous Scan's regions when the account's regions cannot be read, Stale since their last successful read", async () => {
+    const regions = listRegions.Regions.map((region) => (region.RegionName === "eu-south-2" ? { ...region, RegionOptStatus: "ENABLED" } : region));
+    const before = account({ regions, instances: { "eu-south-2": [instance("db-6")] } });
+    await awol(before, NOW).scan();
+    // db-6 has been replaced by db-7, but the account's regions cannot be
+    // read.
+    const after = fakeAws({
+      ...accountAnswers({ instances: { "eu-south-2": [instance("db-7")] } }),
+      [LIST_REGIONS]: { stderr: awsErrors.listRegionsAccessDenied },
+    });
+
+    await awol(after, LATER).scan();
+
+    const scan = await lastScan(after);
+    expect(rows(scan)).toEqual([{ identifier: "db-7", version: "17.9", stale: undefined }]);
+    expect(scan.failedParts).toEqual([
+      { part: { kind: "regions" }, error: awsErrors.listRegionsAccessDenied.trim(), lastReadAt: "2026-11-03T12:00:00.000Z" },
+    ]);
+    const described = after.calls.filter(([, subcommand]) => subcommand === "describe-db-instances").map((argv) => argv[3]);
+    expect(described.sort()).toEqual([...ENABLED_REGIONS, "eu-south-2"].sort());
+    expectOnlyJsonReads(before);
+    expectOnlyJsonReads(after);
+  });
+
+  it("reads no region, showing the error, when the account's regions have never been read successfully", async () => {
+    const aws = fakeAws({ ...accountAnswers(), [LIST_REGIONS]: { stderr: awsErrors.listRegionsAccessDenied } });
+
+    await awol(aws, NOW).scan();
+
+    expect(aws.calls.map(([service, subcommand]) => `${service} ${subcommand}`)).toEqual([
+      "sts get-caller-identity",
+      "account list-regions",
+    ]);
+    const scan = await lastScan(aws, NOW);
+    expect(scan.components).toEqual([]);
+    expect(scan.failedParts).toEqual([{ part: { kind: "regions" }, error: awsErrors.listRegionsAccessDenied.trim() }]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("asks to log in again when credentials expire part-way through a Scan, keeping every result of the last Scan", async () => {
+    const before = account({ instances: { "eu-west-1": [instance("db-6")] } });
+    await awol(before, NOW).scan();
+    const kept = await lastScan(before, NOW);
+    // db-6 has been replaced by db-7, but credentials expire before RDS is
+    // read in eu-west-1.
+    const after = fakeAws({
+      ...accountAnswers({ instances: { "eu-west-1": [instance("db-7")] } }),
+      [describeDbInstancesIn("eu-west-1")]: { stderr: credentialErrors.expiredToken },
+    });
+
+    expect(await awol(after, LATER).scan()).toEqual({ kind: "login-needed", reason: credentialErrors.expiredToken.trim() });
+
+    expect(await lastScan(before, NOW)).toEqual(kept);
+    expectOnlyJsonReads(before);
+    expectOnlyJsonReads(after);
+  });
+
+  it("shows a Scan kept before awol kept Scans by part, and reads every part again on the next Scan", async () => {
+    const aws = account({ instances: { "eu-west-1": [instance("db-6")] } });
+    await awol(aws, NOW).scan();
+    const shown = await lastScan(aws, NOW);
+    // The same Scan as awol kept it before: its Components only.
+    await writeFile(
+      path.join(dir, "accounts", "123456789012", "state.json"),
+      JSON.stringify({
+        lastScan: {
+          ranAt: "2026-11-03T12:00:00.000Z",
+          components: [
+            {
+              service: "RDS",
+              product: "RDS PostgreSQL",
+              region: "eu-west-1",
+              identifier: "db-6",
+              version: "17.9",
+              extendedSupport: "Extended Support",
+              awsLifecycle: { endOfLife: "2030-02-28", extendedSupportEnd: "2033-02-28" },
+              releaseCycle: { name: "17", latest: "17.11", releaseDate: "2024-11-14", endOfLife: "2030-02-28", extendedSupportEnd: "2033-02-28" },
+              drift: {
+                latestPatch: { kind: "behind", version: "17.11" },
+                newestCycle: { kind: "behind", version: "18" },
+                newestOffered: { kind: "behind", version: "18.6" },
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(await lastScan(aws, NOW)).toEqual(shown);
+
+    const failing = fakeAws({
+      ...accountAnswers({ instances: { "eu-west-1": [instance("db-6")] } }),
+      [describeDbInstancesIn("eu-west-1")]: { stderr: awsErrors.accessDenied },
+    });
+    await awol(failing, LATER).scan();
+    expect((await lastScan(failing)).components).toEqual([]);
+    expectOnlyJsonReads(aws);
+    expectOnlyJsonReads(failing);
   });
 });
 

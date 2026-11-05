@@ -1,9 +1,9 @@
-import { KeyRound, TriangleAlert } from "lucide-react";
+import { History, KeyRound, TriangleAlert } from "lucide-react";
 import { connection } from "next/server";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import type { ComponentDrift, ComponentRow, Drift, LastScan, SupportDates } from "../awol/page-model.ts";
+import type { ComponentDrift, ComponentRow, Drift, FailedPart, LastScan, ScanPart, SupportDates } from "../awol/page-model.ts";
 import { STATUSES, type Status } from "../awol/status.ts";
 import { appAwol } from "./app-awol.ts";
 import { ScanButton } from "./scan-button.tsx";
@@ -49,6 +49,7 @@ export default async function DashboardPage() {
 function ScanResult({ scan }: { scan: LastScan }) {
   return (
     <>
+      {scan.failedParts.length > 0 && <FailedParts parts={scan.failedParts} />}
       <ul className="flex flex-wrap gap-3">
         {STATUSES.map((status) => (
           <li key={status} className="flex items-center gap-2 rounded-lg border px-4 py-2">
@@ -87,6 +88,12 @@ function ScanResult({ scan }: { scan: LastScan }) {
               <TableCell>
                 <div className="flex flex-col items-start gap-1">
                   <StatusBadge status={component.status} />
+                  {component.stale !== undefined && (
+                    <Badge variant="outline" className="border-sky-600 text-sky-700 dark:text-sky-400">
+                      <History />
+                      Stale since {formatTime(component.stale.lastReadAt)}
+                    </Badge>
+                  )}
                   {component.datesDisagree && (
                     <Badge variant="outline" className="border-amber-500 text-amber-700 dark:text-amber-400">
                       <TriangleAlert />
@@ -115,6 +122,46 @@ function ScanResult({ scan }: { scan: LastScan }) {
       </Table>
     </>
   );
+}
+
+// The parts of the last Scan that could not be read: each Stale, showing its
+// last successful read, or never read, showing nothing but its error.
+function FailedParts({ parts }: { parts: FailedPart[] }) {
+  return (
+    <Alert className="max-w-4xl">
+      <History />
+      <AlertTitle>Some parts of the last Scan could not be read</AlertTitle>
+      <AlertDescription>
+        <ul className="flex flex-col gap-2">
+          {parts.map(({ part, error, lastReadAt }) => (
+            <li key={partName(part)}>
+              <p>
+                <span className="font-medium text-foreground">{partName(part)}</span>{" "}
+                {lastReadAt === undefined
+                  ? neverRead(part)
+                  : `Stale, showing the last successful read on ${formatTime(lastReadAt)}.`}
+              </p>
+              <p className="font-mono text-xs">{error}</p>
+            </li>
+          ))}
+        </ul>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+// The name of a part of a Scan.
+function partName(part: ScanPart): string {
+  if (part.kind === "regions") return "The account's regions:";
+  if (part.kind === "service") return `${part.service} in ${part.region}:`;
+  return `endoflife.date's ${part.product}:`;
+}
+
+// What a part of a Scan never read successfully leaves on the dashboard.
+function neverRead(part: ScanPart): string {
+  if (part.kind === "regions") return "never read, so no region was read.";
+  if (part.kind === "service") return "never read, so none of its Components are shown.";
+  return "never read, so its Components are Untracked.";
 }
 
 function EndOfLife({ component }: { component: ComponentRow }) {

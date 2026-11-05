@@ -13,6 +13,9 @@ const PRODUCTS: Record<string, Product> = {
   },
 };
 
+// Every ElastiCache Product.
+export const ELASTICACHE_PRODUCTS: Product[] = Object.values(PRODUCTS);
+
 type ReplicationGroup = { ReplicationGroupId: string; Engine: string };
 
 type CacheCluster = { CacheClusterId: string; Engine: string; EngineVersion: string; ReplicationGroupId?: string };

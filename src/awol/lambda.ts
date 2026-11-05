@@ -8,7 +8,7 @@ import { compareVersions } from "./drift.ts";
 // date, which is End of life; its End of life is the date AWS blocks updates
 // to functions on it, which awol leaves out. The Newest cycle is the newest
 // runtime of the same language.
-const PRODUCT: Product = {
+export const LAMBDA_PRODUCT: Product = {
   name: "AWS Lambda",
   endOfLifeProduct: "aws-lambda",
   cycleNames: (runtime) => [runtime],
@@ -87,7 +87,7 @@ export async function readLambdaComponents(aws: AwsRunner, region: string): Prom
   }
   return configurations.map((configuration) => ({
     service: "Lambda",
-    product: PRODUCT,
+    product: LAMBDA_PRODUCT,
     region,
     identifier: `${configuration.FunctionName}:${configuration.Version}`,
     version: configuration.PackageType === "Image" ? undefined : configuration.Runtime,

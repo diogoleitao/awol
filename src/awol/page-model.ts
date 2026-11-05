@@ -1,9 +1,9 @@
 import type { ExtendedSupport, Service, SupportDates } from "./component.ts";
 import type { Drift } from "./drift.ts";
-import type { ComponentDrift } from "./scan.ts";
+import type { ComponentDrift, FailedPart, ScanPart, Stale } from "./scan.ts";
 import type { Status } from "./status.ts";
 
-export type { ComponentDrift, Drift, SupportDates };
+export type { ComponentDrift, Drift, FailedPart, ScanPart, Stale, SupportDates };
 
 // One row of the dashboard's table: a Component, its Status, and the dates of
 // its Release Cycle that exist. End of life and the end of Extended Support
@@ -13,7 +13,9 @@ export type { ComponentDrift, Drift, SupportDates };
 // Component with no End of life has none announced, and an Untracked one
 // with no version reports none. `extendedSupport` is the Component's
 // Extended Support setting, where AWS reports one. `drift` is how far its
-// version is behind each Drift figure; it never decides Status.
+// version is behind each Drift figure; it never decides Status. A Stale row
+// comes from a part of the Scan that could not be read, and has the result of
+// its last successful read, at `stale.lastReadAt`.
 export type ComponentRow = {
   service: Service;
   product: string;
@@ -30,14 +32,16 @@ export type ComponentRow = {
   sources: { aws: SupportDates; "endoflife.date": SupportDates };
   datesDisagree: boolean;
   drift: ComponentDrift;
+  stale?: Stale;
 };
 
-// The last Scan: when it ran, how many Components have each Status, and its
-// Components, most urgent first.
+// The last Scan: when it ran, how many Components have each Status, its
+// Components, most urgent first, and the parts of it that could not be read.
 export type LastScan = {
   ranAt: string;
   counts: Record<Status, number>;
   components: ComponentRow[];
+  failedParts: FailedPart[];
 };
 
 // What the dashboard shows: the AWS account of the active profile and its
