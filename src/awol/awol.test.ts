@@ -52,6 +52,26 @@ import rdsMysql from "./fixtures/endoflife/amazon-rds-mysql.json" with { type: "
 import rdsMariadb from "./fixtures/endoflife/amazon-rds-mariadb.json" with { type: "json" };
 import auroraPostgresql from "./fixtures/endoflife/amazon-aurora-postgresql.json" with { type: "json" };
 import auroraMysql from "./fixtures/endoflife/amazon-aurora-mysql.json" with { type: "json" };
+// Recorded from `aws elasticache describe-replication-groups --region
+// eu-west-1 --output json` and `aws elasticache describe-cache-clusters
+// --region eu-west-1 --output json` on 2026-11-05: five of the account's 25
+// replication groups, one per Engine and version, with their member cache
+// clusters, and one of its two standalone cache clusters, kept to the fields
+// that identify nothing and renamed group-1 to group-5 and cache-1. Every
+// other enabled region answered with none.
+import describeReplicationGroups from "./fixtures/elasticache-describe-replication-groups.json" with { type: "json" };
+import describeCacheClusters from "./fixtures/elasticache-describe-cache-clusters.json" with { type: "json" };
+// Written by hand in the shape of `aws elasticache describe-serverless-caches
+// --region eu-west-1 --output json`, since no enabled region of the recorded
+// account has a Serverless cache: a Redis OSS, a Valkey and a Memcached
+// cache, named serverless-1 to serverless-3.
+import describeServerlessCaches from "./fixtures/elasticache-describe-serverless-caches.json" with { type: "json" };
+// Recorded from `aws elasticache describe-cache-engine-versions --region
+// eu-west-1 --engine redis --output json` on 2026-11-05, kept to the fields
+// that name each version. The answer is the same for every account.
+import redisCacheEngineVersions from "./fixtures/elasticache-describe-cache-engine-versions/redis.json" with { type: "json" };
+// Recorded from endoflife.date's API on 2026-11-05.
+import elasticacheRedis from "./fixtures/endoflife/amazon-elasticache-redis.json" with { type: "json" };
 
 const NOW = new Date("2026-11-03T12:00:00Z");
 
@@ -104,6 +124,7 @@ const RECORDED_PRODUCTS: Record<string, { etag: string; body: unknown }> = {
   "amazon-rds-mariadb": { etag: '"66f9d176975fe23036020e9cda3d2073-ssl"', body: rdsMariadb },
   "amazon-aurora-postgresql": { etag: '"d520db051d8e2e26ef6857339573e37a-ssl"', body: auroraPostgresql },
   "amazon-aurora-mysql": { etag: '"9df9b18955a960f890a086ca94b02c84-ssl"', body: auroraMysql },
+  "amazon-elasticache-redis": { etag: '"0670dbddd644eb99ba19e1206ad8360e-ssl"', body: elasticacheRedis },
 };
 
 // Replays endoflife.date: each product's recorded body with its ETag, or a
@@ -311,18 +332,75 @@ function cluster(identifier: string, changes: Partial<DbCluster> = {}): DbCluste
   return { ...CLUSTERS.find(({ DBClusterIdentifier }) => DBClusterIdentifier === identifier)!, ...changes };
 }
 
+type ReplicationGroup = { ReplicationGroupId: string; MemberClusters: string[]; Engine: string };
+
+type CacheCluster = { CacheClusterId: string; Engine: string; EngineVersion: string; ReplicationGroupId?: string };
+
+type ServerlessCache = { ServerlessCacheName: string; Engine: string; MajorEngineVersion: string; FullEngineVersion: string };
+
+const REPLICATION_GROUPS: ReplicationGroup[] = describeReplicationGroups.ReplicationGroups;
+
+const CACHE_CLUSTERS: CacheCluster[] = describeCacheClusters.CacheClusters;
+
+const SERVERLESS_CACHES: ServerlessCache[] = describeServerlessCaches.ServerlessCaches;
+
+// The recorded replication group `identifier`, and its recorded member cache
+// clusters, with the fields in `changes` on each member.
+function replicationGroup(identifier: string, changes: Partial<CacheCluster> = {}): { group: ReplicationGroup; members: CacheCluster[] } {
+  return {
+    group: REPLICATION_GROUPS.find(({ ReplicationGroupId }) => ReplicationGroupId === identifier)!,
+    members: CACHE_CLUSTERS.filter(({ ReplicationGroupId }) => ReplicationGroupId === identifier).map((member) => ({ ...member, ...changes })),
+  };
+}
+
+// The recorded standalone cache cluster cache-1, Redis OSS 5.0.6, given
+// another identifier and the fields in `changes`.
+function cacheCluster(identifier: string, changes: Partial<CacheCluster> = {}): CacheCluster {
+  return { ...CACHE_CLUSTERS.find(({ CacheClusterId }) => CacheClusterId === "cache-1")!, CacheClusterId: identifier, ...changes };
+}
+
+// The hand-written Serverless cache `identifier`.
+function serverlessCache(identifier: string): ServerlessCache {
+  return SERVERLESS_CACHES.find(({ ServerlessCacheName }) => ServerlessCacheName === identifier)!;
+}
+
+function describeReplicationGroupsIn(region: string) {
+  return `elasticache describe-replication-groups --region ${region} --output json`;
+}
+
+function describeCacheClustersIn(region: string) {
+  return `elasticache describe-cache-clusters --region ${region} --output json`;
+}
+
+function describeServerlessCachesIn(region: string) {
+  return `elasticache describe-serverless-caches --region ${region} --output json`;
+}
+
+// The versions AWS offers by ElastiCache Engine, recorded in eu-west-1 and
+// replayed for every region.
+const CACHE_ENGINE_VERSIONS: Record<string, unknown> = { redis: redisCacheEngineVersions };
+
+function describeCacheEngineVersionsIn(region: string, engine: string) {
+  return `elasticache describe-cache-engine-versions --region ${region} --engine ${engine} --output json`;
+}
+
 type AccountContents = {
   regions?: { RegionName: string; RegionOptStatus: string }[];
   instances?: Record<string, DbInstance[]>;
   clusters?: Record<string, DbCluster[]>;
   majorVersions?: Record<string, unknown>;
   engineVersions?: Record<string, unknown>;
+  replicationGroups?: Record<string, ReplicationGroup[]>;
+  cacheClusters?: Record<string, CacheCluster[]>;
+  serverlessCaches?: Record<string, ServerlessCache[]>;
 };
 
 // The recorded account, signed in: its regions, its RDS instances and DB
-// clusters by region, where every enabled region not given has none, and
-// AWS's RDS lifecycles and offered versions by Engine in each region, the
-// recorded ones unless given. A region with no answer fails the Scan.
+// clusters and its ElastiCache replication groups, cache clusters and
+// Serverless caches by region, where every enabled region not given has
+// none, AWS's RDS lifecycles and offered versions by Engine in each region,
+// the recorded ones unless given, and the recorded ElastiCache offered
+// versions. A region with no answer fails the Scan.
 function account(contents: AccountContents = {}) {
   return fakeAws(accountAnswers(contents));
 }
@@ -333,12 +411,22 @@ function accountAnswers({
   clusters = {},
   majorVersions = MAJOR_VERSIONS,
   engineVersions = ENGINE_VERSIONS,
+  replicationGroups = {},
+  cacheClusters = {},
+  serverlessCaches = {},
 }: AccountContents = {}): Record<string, Answer> {
   const answers: Record<string, Answer> = {
     [CALLER_IDENTITY]: SIGNED_IN,
     [LIST_REGIONS]: { stdout: JSON.stringify({ Regions: regions }) },
   };
-  for (const region of [...ENABLED_REGIONS, ...Object.keys(instances), ...Object.keys(clusters)]) {
+  for (const region of [
+    ...ENABLED_REGIONS,
+    ...Object.keys(instances),
+    ...Object.keys(clusters),
+    ...Object.keys(replicationGroups),
+    ...Object.keys(cacheClusters),
+    ...Object.keys(serverlessCaches),
+  ]) {
     answers[describeDbInstancesIn(region)] = { stdout: JSON.stringify({ DBInstances: instances[region] ?? [] }) };
     answers[describeDbClustersIn(region)] = { stdout: JSON.stringify({ DBClusters: clusters[region] ?? [] }) };
     for (const [engine, answer] of Object.entries(majorVersions)) {
@@ -346,6 +434,12 @@ function accountAnswers({
     }
     for (const [engine, answer] of Object.entries(engineVersions)) {
       answers[describeEngineVersionsIn(region, engine)] = { stdout: JSON.stringify(answer) };
+    }
+    answers[describeReplicationGroupsIn(region)] = { stdout: JSON.stringify({ ReplicationGroups: replicationGroups[region] ?? [] }) };
+    answers[describeCacheClustersIn(region)] = { stdout: JSON.stringify({ CacheClusters: cacheClusters[region] ?? [] }) };
+    answers[describeServerlessCachesIn(region)] = { stdout: JSON.stringify({ ServerlessCaches: serverlessCaches[region] ?? [] }) };
+    for (const [engine, answer] of Object.entries(CACHE_ENGINE_VERSIONS)) {
+      answers[describeCacheEngineVersionsIn(region, engine)] = { stdout: JSON.stringify(answer) };
     }
   }
   return answers;
@@ -1268,6 +1362,214 @@ describe("Drift for RDS", () => {
       newestCycle: { kind: "not-available" },
       newestOffered: { kind: "none" },
     });
+    expectOnlyJsonReads(aws);
+  });
+});
+
+describe("ElastiCache Redis OSS caches", () => {
+  // The page's Components after a Scan of an account with no RDS and only the
+  // given replication groups, with their members, standalone cache clusters
+  // and Serverless caches in eu-west-1; and the fake runner, to check last.
+  async function scannedCaches({
+    groups = [],
+    standalone = [],
+    serverless = [],
+  }: {
+    groups?: { group: ReplicationGroup; members: CacheCluster[] }[];
+    standalone?: CacheCluster[];
+    serverless?: ServerlessCache[];
+  }) {
+    const aws = account({
+      instances: {},
+      replicationGroups: { "eu-west-1": groups.map(({ group }) => group) },
+      cacheClusters: { "eu-west-1": [...groups.flatMap(({ members }) => members), ...standalone] },
+      serverlessCaches: { "eu-west-1": serverless },
+    });
+    await awol(aws).scan();
+    const model = await awol(aws).pageModel();
+    if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+    return { components: model.lastScan!.components, aws };
+  }
+
+  it("shows a replication group as one Component, on its member cache clusters' version", async () => {
+    const { components, aws } = await scannedCaches({ groups: [replicationGroup("group-2")] });
+
+    expect(components).toEqual([
+      {
+        service: "ElastiCache",
+        product: "ElastiCache Redis OSS",
+        region: "eu-west-1",
+        identifier: "group-2",
+        version: "6.2.6",
+        releaseCycle: "6",
+        status: "Falling behind",
+        cycleReleaseDate: "2020-10-13",
+        endOfLife: "2027-01-31",
+        extendedSupportEnd: "2030-01-31",
+        sources: { aws: {}, "endoflife.date": { endOfLife: "2027-01-31", extendedSupportEnd: "2030-01-31" } },
+        datesDisagree: false,
+        drift: {
+          latestPatch: { kind: "not-available" },
+          newestCycle: { kind: "behind", version: "7" },
+          newestOffered: { kind: "behind", version: "7.1" },
+        },
+      },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("takes the lowest version among a replication group's members, as part-way through an upgrade", async () => {
+    const { group, members } = replicationGroup("group-1");
+    const upgrading = [{ ...members[0]!, EngineVersion: "6.2.6" }, members[1]!];
+
+    const { components, aws } = await scannedCaches({ groups: [{ group, members: upgrading }] });
+
+    expect(components).toMatchObject([{ identifier: "group-1", version: "5.0.6", releaseCycle: "5", status: "AWOL" }]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows a replication group none of whose members AWS lists, as when created between two calls, as Untracked with no version", async () => {
+    const { components, aws } = await scannedCaches({ groups: [{ group: replicationGroup("group-2").group, members: [] }] });
+
+    expect(components).toEqual([
+      {
+        service: "ElastiCache",
+        product: "ElastiCache Redis OSS",
+        region: "eu-west-1",
+        identifier: "group-2",
+        status: "Untracked",
+        sources: { aws: {}, "endoflife.date": {} },
+        datesDisagree: false,
+        drift: {
+          latestPatch: { kind: "not-available" },
+          newestCycle: { kind: "not-available" },
+          newestOffered: { kind: "not-available" },
+        },
+      },
+    ]);
+    expect(components[0]!.version).toBeUndefined();
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows a standalone cache cluster as one Component, and no member of a replication group, which AWS lists among cache clusters", async () => {
+    const { components, aws } = await scannedCaches({
+      groups: [replicationGroup("group-1"), replicationGroup("group-2")],
+      standalone: [cacheCluster("cache-1")],
+    });
+
+    expect(components.map(({ identifier, version, status }) => ({ identifier, version, status }))).toEqual([
+      { identifier: "group-1", version: "5.0.6", status: "AWOL" },
+      { identifier: "cache-1", version: "5.0.6", status: "AWOL" },
+      { identifier: "group-2", version: "6.2.6", status: "Falling behind" },
+    ]);
+    expect(components[1]).toEqual({
+      service: "ElastiCache",
+      product: "ElastiCache Redis OSS",
+      region: "eu-west-1",
+      identifier: "cache-1",
+      version: "5.0.6",
+      releaseCycle: "5",
+      status: "AWOL",
+      cycleReleaseDate: "2018-10-17",
+      endOfLife: "2026-01-31",
+      extendedSupportEnd: "2029-01-31",
+      sources: { aws: {}, "endoflife.date": { endOfLife: "2026-01-31", extendedSupportEnd: "2029-01-31" } },
+      datesDisagree: false,
+      drift: {
+        latestPatch: { kind: "not-available" },
+        newestCycle: { kind: "behind", version: "7" },
+        newestOffered: { kind: "behind", version: "7.1" },
+      },
+    });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows a Serverless cache as one Component, on its full engine version", async () => {
+    const { components, aws } = await scannedCaches({ serverless: [serverlessCache("serverless-1")] });
+
+    expect(components).toEqual([
+      {
+        service: "ElastiCache",
+        product: "ElastiCache Redis OSS",
+        region: "eu-west-1",
+        identifier: "serverless-1",
+        version: "7.1",
+        releaseCycle: "7",
+        status: "Current",
+        cycleReleaseDate: "2022-04-12",
+        sources: { aws: {}, "endoflife.date": {} },
+        datesDisagree: false,
+        drift: {
+          latestPatch: { kind: "not-available" },
+          newestCycle: { kind: "none" },
+          newestOffered: { kind: "none" },
+        },
+      },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("leaves out Valkey and Memcached caches", async () => {
+    const { components, aws } = await scannedCaches({
+      groups: REPLICATION_GROUPS.map(({ ReplicationGroupId }) => replicationGroup(ReplicationGroupId)),
+      standalone: [cacheCluster("cache-1"), cacheCluster("cache-2", { Engine: "memcached", EngineVersion: "1.6.22" })],
+      serverless: SERVERLESS_CACHES,
+    });
+
+    expect(components.map(({ identifier }) => identifier).sort()).toEqual(["cache-1", "group-1", "group-2", "group-3", "group-4", "serverless-1"]);
+    const engines = aws.calls.filter(([, subcommand]) => subcommand === "describe-cache-engine-versions").map((argv) => argv[5]);
+    expect(new Set(engines)).toEqual(new Set(["redis"]));
+    expectOnlyJsonReads(aws);
+  });
+
+  it.each([
+    // By major. endoflife.date ends standard support for 4 and 5 on
+    // 2026-01-31 and for 6 on 2027-01-31, and announces none for 7.
+    ["4.0.10", "4", "AWOL"],
+    ["5.0.6", "5", "AWOL"],
+    ["6.2.6", "6", "Falling behind"],
+    ["7.0.7", "7", "Current"],
+    ["7.1.0", "7", "Current"],
+  ])("matches a replication group on Redis OSS %s to Release Cycle %s", async (version, releaseCycle, status) => {
+    const { components, aws } = await scannedCaches({ groups: [replicationGroup("group-1", { EngineVersion: version })] });
+
+    expect(components).toMatchObject([{ product: "ElastiCache Redis OSS", version, releaseCycle, status }]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it.each([
+    // endoflife.date gives no Redis OSS cycle a Latest patch, so the Newest
+    // cycle is 7; AWS offers up to 7.1 in eu-west-1.
+    ["5.0.6", { latestPatch: { kind: "not-available" }, newestCycle: { kind: "behind", version: "7" }, newestOffered: { kind: "behind", version: "7.1" } }],
+    ["7.0.7", { latestPatch: { kind: "not-available" }, newestCycle: { kind: "none" }, newestOffered: { kind: "behind", version: "7.1" } }],
+    ["7.1.0", { latestPatch: { kind: "not-available" }, newestCycle: { kind: "none" }, newestOffered: { kind: "none" } }],
+  ])("shows Redis OSS %s's Drift", async (version, drift) => {
+    const { components, aws } = await scannedCaches({ groups: [replicationGroup("group-1", { EngineVersion: version })] });
+
+    expect(components[0]!.drift).toEqual(drift);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("reads the Newest offered version in each Component's own region", async () => {
+    // The recorded Redis OSS versions, with nothing past 7.0 offered in
+    // us-west-2.
+    const older = structuredClone(redisCacheEngineVersions);
+    older.CacheEngineVersions = older.CacheEngineVersions.filter(({ EngineVersion }) => EngineVersion !== "7.1");
+    const aws = fakeAws({
+      ...accountAnswers({
+        instances: {},
+        cacheClusters: { "eu-west-1": [cacheCluster("cache-1", { EngineVersion: "7.0.7" })], "us-west-2": [cacheCluster("cache-2", { EngineVersion: "7.0.7" })] },
+      }),
+      [describeCacheEngineVersionsIn("us-west-2", "redis")]: { stdout: JSON.stringify(older) },
+    });
+
+    await awol(aws).scan();
+
+    const model = await awol(aws).pageModel();
+    expect(model.kind === "signed-in" && model.lastScan?.components.map(({ identifier, drift }) => ({ identifier, newestOffered: drift.newestOffered }))).toEqual([
+      { identifier: "cache-1", newestOffered: { kind: "behind", version: "7.1" } },
+      { identifier: "cache-2", newestOffered: { kind: "none" } },
+    ]);
     expectOnlyJsonReads(aws);
   });
 });

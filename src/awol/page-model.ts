@@ -1,5 +1,5 @@
+import type { ExtendedSupport, Service, SupportDates } from "./component.ts";
 import type { Drift } from "./drift.ts";
-import type { ExtendedSupport, SupportDates } from "./rds.ts";
 import type { ComponentDrift } from "./scan.ts";
 import type { Status } from "./status.ts";
 
@@ -10,15 +10,16 @@ export type { ComponentDrift, Drift, SupportDates };
 // are AWS's where AWS gives them and endoflife.date's otherwise, and decide
 // Status; `sources` has each source's own, and `datesDisagree` marks a row
 // where both give a date for the same thing and they differ. A Current
-// Component with no End of life has none announced. `extendedSupport` is the
-// Component's Extended Support setting, where AWS reports one. `drift` is how
-// far its version is behind each Drift figure; it never decides Status.
+// Component with no End of life has none announced, and an Untracked one
+// with no version reports none. `extendedSupport` is the Component's
+// Extended Support setting, where AWS reports one. `drift` is how far its
+// version is behind each Drift figure; it never decides Status.
 export type ComponentRow = {
-  service: "RDS";
+  service: Service;
   product: string;
   region: string;
   identifier: string;
-  version: string;
+  version?: string;
   extendedSupport?: ExtendedSupport;
   releaseCycle?: string;
   status: Status;

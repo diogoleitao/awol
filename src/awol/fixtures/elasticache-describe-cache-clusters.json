@@ -1,0 +1,15 @@
+{
+  "CacheClusters": [
+    { "CacheClusterId": "group-1-001", "CacheNodeType": "cache.t4g.micro", "Engine": "redis", "EngineVersion": "5.0.6", "CacheClusterStatus": "available", "NumCacheNodes": 1, "PreferredAvailabilityZone": "eu-west-1b", "ReplicationGroupId": "group-1", "AutoMinorVersionUpgrade": true },
+    { "CacheClusterId": "group-1-002", "CacheNodeType": "cache.t4g.micro", "Engine": "redis", "EngineVersion": "5.0.6", "CacheClusterStatus": "available", "NumCacheNodes": 1, "PreferredAvailabilityZone": "eu-west-1a", "ReplicationGroupId": "group-1", "AutoMinorVersionUpgrade": true },
+    { "CacheClusterId": "group-2-001", "CacheNodeType": "cache.t3.small", "Engine": "redis", "EngineVersion": "6.2.6", "CacheClusterStatus": "available", "NumCacheNodes": 1, "PreferredAvailabilityZone": "eu-west-1b", "ReplicationGroupId": "group-2", "AutoMinorVersionUpgrade": true },
+    { "CacheClusterId": "group-2-002", "CacheNodeType": "cache.t3.small", "Engine": "redis", "EngineVersion": "6.2.6", "CacheClusterStatus": "available", "NumCacheNodes": 1, "PreferredAvailabilityZone": "eu-west-1a", "ReplicationGroupId": "group-2", "AutoMinorVersionUpgrade": true },
+    { "CacheClusterId": "group-3-001", "CacheNodeType": "cache.t2.micro", "Engine": "redis", "EngineVersion": "7.0.7", "CacheClusterStatus": "available", "NumCacheNodes": 1, "PreferredAvailabilityZone": "eu-west-1a", "ReplicationGroupId": "group-3", "AutoMinorVersionUpgrade": false },
+    { "CacheClusterId": "group-3-002", "CacheNodeType": "cache.t2.micro", "Engine": "redis", "EngineVersion": "7.0.7", "CacheClusterStatus": "available", "NumCacheNodes": 1, "PreferredAvailabilityZone": "eu-west-1a", "ReplicationGroupId": "group-3", "AutoMinorVersionUpgrade": false },
+    { "CacheClusterId": "group-4-001", "CacheNodeType": "cache.t4g.micro", "Engine": "redis", "EngineVersion": "7.1.0", "CacheClusterStatus": "available", "NumCacheNodes": 1, "PreferredAvailabilityZone": "eu-west-1b", "ReplicationGroupId": "group-4", "AutoMinorVersionUpgrade": true },
+    { "CacheClusterId": "group-4-002", "CacheNodeType": "cache.t4g.micro", "Engine": "redis", "EngineVersion": "7.1.0", "CacheClusterStatus": "available", "NumCacheNodes": 1, "PreferredAvailabilityZone": "eu-west-1a", "ReplicationGroupId": "group-4", "AutoMinorVersionUpgrade": true },
+    { "CacheClusterId": "group-5-001", "CacheNodeType": "cache.m7g.large", "Engine": "valkey", "EngineVersion": "8.2.0", "CacheClusterStatus": "available", "NumCacheNodes": 1, "PreferredAvailabilityZone": "eu-west-1b", "ReplicationGroupId": "group-5", "AutoMinorVersionUpgrade": true },
+    { "CacheClusterId": "group-5-002", "CacheNodeType": "cache.m7g.large", "Engine": "valkey", "EngineVersion": "8.2.0", "CacheClusterStatus": "available", "NumCacheNodes": 1, "PreferredAvailabilityZone": "eu-west-1a", "ReplicationGroupId": "group-5", "AutoMinorVersionUpgrade": true },
+    { "CacheClusterId": "cache-1", "CacheNodeType": "cache.t3.micro", "Engine": "redis", "EngineVersion": "5.0.6", "CacheClusterStatus": "available", "NumCacheNodes": 1, "PreferredAvailabilityZone": "eu-west-1b", "AutoMinorVersionUpgrade": true }
+  ]
+}

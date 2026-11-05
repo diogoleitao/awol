@@ -1,0 +1,10 @@
+{
+  "CacheEngineVersions": [
+    { "Engine": "redis", "EngineVersion": "4.0.10", "CacheParameterGroupFamily": "redis4.0" },
+    { "Engine": "redis", "EngineVersion": "5.0.6", "CacheParameterGroupFamily": "redis5.0" },
+    { "Engine": "redis", "EngineVersion": "6.0", "CacheParameterGroupFamily": "redis6.x" },
+    { "Engine": "redis", "EngineVersion": "6.2", "CacheParameterGroupFamily": "redis6.x" },
+    { "Engine": "redis", "EngineVersion": "7.0", "CacheParameterGroupFamily": "redis7" },
+    { "Engine": "redis", "EngineVersion": "7.1", "CacheParameterGroupFamily": "redis7" }
+  ]
+}

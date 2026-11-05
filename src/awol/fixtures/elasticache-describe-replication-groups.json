@@ -1,0 +1,59 @@
+{
+  "ReplicationGroups": [
+    {
+      "ReplicationGroupId": "group-1",
+      "Status": "available",
+      "MemberClusters": ["group-1-001", "group-1-002"],
+      "AutomaticFailover": "disabled",
+      "MultiAZ": "disabled",
+      "ClusterEnabled": false,
+      "CacheNodeType": "cache.t4g.micro",
+      "AutoMinorVersionUpgrade": true,
+      "Engine": "redis"
+    },
+    {
+      "ReplicationGroupId": "group-2",
+      "Status": "available",
+      "MemberClusters": ["group-2-001", "group-2-002"],
+      "AutomaticFailover": "enabled",
+      "MultiAZ": "enabled",
+      "ClusterEnabled": false,
+      "CacheNodeType": "cache.t3.small",
+      "AutoMinorVersionUpgrade": true,
+      "Engine": "redis"
+    },
+    {
+      "ReplicationGroupId": "group-3",
+      "Status": "available",
+      "MemberClusters": ["group-3-001", "group-3-002"],
+      "AutomaticFailover": "enabled",
+      "MultiAZ": "disabled",
+      "ClusterEnabled": false,
+      "CacheNodeType": "cache.t2.micro",
+      "AutoMinorVersionUpgrade": false,
+      "Engine": "redis"
+    },
+    {
+      "ReplicationGroupId": "group-4",
+      "Status": "available",
+      "MemberClusters": ["group-4-001", "group-4-002"],
+      "AutomaticFailover": "enabled",
+      "MultiAZ": "disabled",
+      "ClusterEnabled": false,
+      "CacheNodeType": "cache.t4g.micro",
+      "AutoMinorVersionUpgrade": true,
+      "Engine": "redis"
+    },
+    {
+      "ReplicationGroupId": "group-5",
+      "Status": "available",
+      "MemberClusters": ["group-5-001", "group-5-002"],
+      "AutomaticFailover": "enabled",
+      "MultiAZ": "enabled",
+      "ClusterEnabled": false,
+      "CacheNodeType": "cache.m7g.large",
+      "AutoMinorVersionUpgrade": true,
+      "Engine": "valkey"
+    }
+  ]
+}

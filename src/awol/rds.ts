@@ -1,42 +1,12 @@
 import type { AwsRunner } from "../aws/runner.ts";
-import { compareVersions } from "./drift.ts";
+import type { ComponentReading, ExtendedSupport, Product, SupportDates } from "./component.ts";
+import { highestVersion } from "./drift.ts";
 
-// A Product awol reads from RDS: its name, its endoflife.date product, the
-// Release Cycle names a version could match, most specific first, the AWS
-// major version a version is in, and whether AWS offers it Extended Support
-// at all, and a version as endoflife.date numbers Latest patches.
-export type Product = {
-  name: string;
-  endOfLifeProduct: string;
-  cycleNames(version: string): string[];
+// A Product awol reads from RDS, with the AWS major version a version is in,
+// and whether AWS offers it Extended Support at all.
+type RdsProduct = Product & {
   awsMajorVersion(version: string): string;
   hasExtendedSupport: boolean;
-  latestPatchVersion(version: string): string;
-};
-
-// The End of life and end of Extended Support one source gives, where it
-// gives them.
-export type SupportDates = {
-  endOfLife?: string;
-  extendedSupportEnd?: string;
-};
-
-// What AWS does with a Component at End of life: enroll it into Extended
-// Support, or upgrade it.
-export type ExtendedSupport = "Extended Support" | "auto-upgrade at End of life";
-
-// One Component as a Scan read it from AWS, with AWS's support dates for its
-// AWS major version in its region and the Newest offered version of its
-// Product there, if AWS offers any.
-export type ComponentReading = {
-  service: "RDS";
-  product: Product;
-  region: string;
-  identifier: string;
-  version: string;
-  extendedSupport?: ExtendedSupport;
-  awsLifecycle: SupportDates;
-  newestOffered?: string;
 };
 
 // The Extended Support setting by EngineLifecycleSupport.
@@ -47,7 +17,7 @@ const EXTENDED_SUPPORT: Record<string, ExtendedSupport> = {
 
 // The RDS Products by Engine. Any other Engine, such as Oracle or SQL Server,
 // is not a Component.
-const PRODUCTS: Record<string, Product> = {
+const PRODUCTS: Record<string, RdsProduct> = {
   // By major (`13.7` to `13`), except before 10, where the cycle is `x.y`
   // (`9.6.24` to `9.6`). The AWS major version is the same.
   postgres: {
@@ -182,9 +152,7 @@ export async function readRdsComponents(aws: AwsRunner, region: string): Promise
 async function readNewestOffered(aws: AwsRunner, region: string, engine: string): Promise<string | undefined> {
   const stdout = await aws(["rds", "describe-db-engine-versions", "--region", region, "--engine", engine, "--output", "json"]);
   const versions = (JSON.parse(stdout) as { DBEngineVersions: { EngineVersion: string }[] }).DBEngineVersions;
-  return versions
-    .map(({ EngineVersion }) => EngineVersion)
-    .reduce<string | undefined>((newest, version) => (newest === undefined || compareVersions(version, newest) > 0 ? version : newest), undefined);
+  return highestVersion(versions.map(({ EngineVersion }) => EngineVersion));
 }
 
 type DbMajorEngineVersion = {

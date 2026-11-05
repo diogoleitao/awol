@@ -1,0 +1,7 @@
+{
+  "ServerlessCaches": [
+    { "ServerlessCacheName": "serverless-1", "Engine": "redis", "MajorEngineVersion": "7", "FullEngineVersion": "7.1", "Status": "available" },
+    { "ServerlessCacheName": "serverless-2", "Engine": "valkey", "MajorEngineVersion": "8", "FullEngineVersion": "8.2", "Status": "available" },
+    { "ServerlessCacheName": "serverless-3", "Engine": "memcached", "MajorEngineVersion": "1.6", "FullEngineVersion": "1.6.22", "Status": "available" }
+  ]
+}

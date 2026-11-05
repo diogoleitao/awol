@@ -4,15 +4,23 @@ import type { ReleaseCycle } from "../endoflife/release-cycles.ts";
 // past it, or not available because there is no figure to compare with.
 export type Drift = { kind: "behind"; version: string } | { kind: "none" } | { kind: "not-available" };
 
-// The Drift of `version` from `target`, by version order.
-export function driftFrom(version: string, target: string | undefined): Drift {
-  if (target === undefined) return { kind: "not-available" };
+// The Drift of `version` from `target`, by version order: not available
+// without both.
+export function driftFrom(version: string | undefined, target: string | undefined): Drift {
+  if (version === undefined || target === undefined) return { kind: "not-available" };
   return compareVersions(version, target) < 0 ? { kind: "behind", version: target } : { kind: "none" };
 }
 
-// The one of `cycles` with the highest Latest patch. Of all a Product's
-// Release Cycles, that is its Newest cycle: for RDS MySQL the 8.4 line, not
-// the 8.4.9 minor cycle endoflife.date lists first. Of the cycles a version
+// The Newest cycle of a Product's Release Cycles: the one with the highest
+// Latest patch, for RDS MySQL the 8.4 line, not the 8.4.9 minor cycle
+// endoflife.date lists first; or, where endoflife.date gives no cycle a
+// Latest patch, as for ElastiCache Redis OSS, the one with the highest name.
+export function newestCycleOf(cycles: ReleaseCycle[]): ReleaseCycle | undefined {
+  const highestName = highestVersion(cycles.map(({ name }) => name));
+  return withHighestLatestPatch(cycles) ?? cycles.find(({ name }) => name === highestName);
+}
+
+// The one of `cycles` with the highest Latest patch. Of the cycles a version
 // matches, it is the line that gives the Latest patch: for MySQL 8.4.7, the
 // 8.4 line's 8.4.11 over the 8.4.7 cycle's own 8.4.7.
 export function withHighestLatestPatch(cycles: ReleaseCycle[]): ReleaseCycle | undefined {
@@ -33,6 +41,22 @@ export function driftFromCycle(
 ): Drift {
   if (releaseCycle === undefined || newestCycle === undefined) return { kind: "not-available" };
   return cycleNames.includes(newestCycle.name) ? { kind: "none" } : { kind: "behind", version: newestCycle.name };
+}
+
+// The highest of `versions` by version order.
+export function highestVersion(versions: string[]): string | undefined {
+  return versions.reduce<string | undefined>(
+    (highest, version) => (highest === undefined || compareVersions(version, highest) > 0 ? version : highest),
+    undefined,
+  );
+}
+
+// The lowest of `versions` by version order.
+export function lowestVersion(versions: string[]): string | undefined {
+  return versions.reduce<string | undefined>(
+    (lowest, version) => (lowest === undefined || compareVersions(version, lowest) < 0 ? version : lowest),
+    undefined,
+  );
 }
 
 // Orders versions by their dotted numbers, skipping a dotted word such as

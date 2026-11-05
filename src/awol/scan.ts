@@ -1,7 +1,9 @@
 import type { AwsRunner } from "../aws/runner.ts";
 import type { ReleaseCycle } from "../endoflife/release-cycles.ts";
-import { type Drift, driftFrom, driftFromCycle, withHighestLatestPatch } from "./drift.ts";
-import { type ExtendedSupport, readRdsComponents, type SupportDates } from "./rds.ts";
+import type { ComponentReading, ExtendedSupport, Service, SupportDates } from "./component.ts";
+import { type Drift, driftFrom, driftFromCycle, newestCycleOf, withHighestLatestPatch } from "./drift.ts";
+import { readElastiCacheComponents } from "./elasticache.ts";
+import { readRdsComponents } from "./rds.ts";
 
 // How many regions a Scan reads at once.
 const REGION_CONCURRENCY = 8;
@@ -14,11 +16,11 @@ export type ComponentDrift = { latestPatch: Drift; newestCycle: Drift; newestOff
 // and its Drift. A Scan from before awol read AWS's dates and settings has
 // none, and one from before it read Drift has no Drift.
 export type ScannedComponent = {
-  service: "RDS";
+  service: Service;
   product: string;
   region: string;
   identifier: string;
-  version: string;
+  version?: string;
   extendedSupport?: ExtendedSupport;
   awsLifecycle?: SupportDates;
   releaseCycle?: ReleaseCycle;
@@ -38,7 +40,7 @@ export async function runScan(
   now: Date,
 ): Promise<Scan> {
   const regions = await enabledRegions(aws);
-  const readings = (await mapConcurrently(regions, REGION_CONCURRENCY, (region) => readRdsComponents(aws, region))).flat();
+  const readings = (await mapConcurrently(regions, REGION_CONCURRENCY, (region) => readComponents(aws, region))).flat();
 
   const endOfLifeProducts = [...new Set(readings.map((reading) => reading.product.endOfLifeProduct))];
   const cyclesByProduct = new Map(
@@ -51,18 +53,28 @@ export async function runScan(
     ranAt: now.toISOString(),
     components: readings.map(({ product, newestOffered, ...reading }) => {
       const cycles = cyclesByProduct.get(product.endOfLifeProduct)!;
-      const cycleNames = product.cycleNames(reading.version);
+      // A Component that reports no version could match no Release Cycle.
+      const cycleNames = reading.version === undefined ? [] : product.cycleNames(reading.version);
       // Every Release Cycle the version matches, most specific first.
       const matched = cycleNames.flatMap((name) => cycles.filter((cycle) => cycle.name === name));
       const releaseCycle = matched[0];
       const drift = {
-        latestPatch: driftFrom(product.latestPatchVersion(reading.version),withHighestLatestPatch(matched)?.latest),
-        newestCycle: driftFromCycle(releaseCycle, cycleNames, withHighestLatestPatch(cycles)),
+        latestPatch: driftFrom(
+          reading.version === undefined ? undefined : product.latestPatchVersion(reading.version),
+          withHighestLatestPatch(matched)?.latest,
+        ),
+        newestCycle: driftFromCycle(releaseCycle, cycleNames, newestCycleOf(cycles)),
         newestOffered: driftFrom(reading.version, newestOffered),
       };
       return { ...reading, product: product.name, releaseCycle, drift };
     }),
   };
+}
+
+// The Components of every service in `region`, one service at a time, so a
+// region makes one call at once.
+async function readComponents(aws: AwsRunner, region: string): Promise<ComponentReading[]> {
+  return [...(await readRdsComponents(aws, region)), ...(await readElastiCacheComponents(aws, region))];
 }
 
 // The regions from `account list-regions` with status ENABLED or
