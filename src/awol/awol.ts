@@ -5,7 +5,7 @@ import type { EndOfLifeFetcher } from "../endoflife/fetcher.ts";
 import { openReleaseCycles } from "../endoflife/release-cycles.ts";
 import type { ComponentDrift, ComponentRow, LastScan, PageModel, SupportDates } from "./page-model.ts";
 import { componentsOf, failedPartsOf, runScan, type Scan } from "./scan.ts";
-import { STATUSES, statusOf } from "./status.ts";
+import { countsOf, STATUSES, statusOf } from "./status.ts";
 
 export type Clock = { now(): Date };
 
@@ -119,10 +119,7 @@ function lastScanOf(scan: Scan, now: Date): LastScan {
       STATUSES.indexOf(a.status) - STATUSES.indexOf(b.status) ||
       compareSoonestFirst(a.endOfLife, b.endOfLife),
   );
-  const counts = Object.fromEntries(
-    STATUSES.map((status) => [status, components.filter((component) => component.status === status).length]),
-  ) as LastScan["counts"];
-  return { ranAt: scan.ranAt, counts, components, failedParts: failedPartsOf(scan) };
+  return { ranAt: scan.ranAt, counts: countsOf(components), components, failedParts: failedPartsOf(scan) };
 }
 
 // The Drift of a Component in a Scan from before awol read Drift.

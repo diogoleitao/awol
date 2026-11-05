@@ -6,6 +6,7 @@ import { isReadOnly } from "../aws/read-only.ts";
 import { type AwsRunner, awsCliError } from "../aws/runner.ts";
 import type { EndOfLifeFetcher } from "../endoflife/fetcher.ts";
 import { openAwol } from "./awol.ts";
+import { type DashboardView, dashboardViewOf, filterOptionsOf, NO_FILTERS } from "./dashboard-view.ts";
 // Recorded from `aws sts get-caller-identity --output json` against a real
 // account, then stripped of the account ID, user ID and user name.
 import callerIdentity from "./fixtures/sts-get-caller-identity.json" with { type: "json" };
@@ -2313,6 +2314,143 @@ describe("Lambda functions", () => {
     const { components, aws } = await scannedFunctions([{ latest: lambdaFunction("function-6", { Runtime: runtime }) }]);
 
     expect(components[0]!.drift).toEqual({ latestPatch: { kind: "not-available" }, newestCycle, newestOffered: { kind: "not-available" } });
+    expectOnlyJsonReads(aws);
+  });
+});
+
+describe("the dashboard's filters and grouping", () => {
+  // The page's last Scan of an account with the recorded RDS instances, a
+  // function on python3.8 and one on python3.12 in eu-west-1, and an instance
+  // on PostgreSQL 13 and a container-image function in us-east-1, most urgent
+  // first:
+  //
+  //   AWOL            function-9:$LATEST  AWS Lambda python3.8  eu-west-1
+  //   AWOL            db-6                RDS PostgreSQL 13      us-east-1
+  //   AWOL            db-1                RDS MySQL 8.0.46       eu-west-1
+  //   Falling behind  db-2, db-3          RDS PostgreSQL 14      eu-west-1
+  //   Current         function-6:$LATEST  AWS Lambda python3.12  eu-west-1
+  //   Current         db-4                RDS PostgreSQL 16      eu-west-1
+  //   Current         db-5                RDS PostgreSQL 17      eu-west-1
+  //   Untracked       function-1:$LATEST  AWS Lambda             us-east-1
+  //
+  // and the fake runner, to check last.
+  async function scannedAccount() {
+    const aws = account({
+      instances: {
+        "eu-west-1": describeDbInstances.DBInstances,
+        "us-east-1": [instance("db-6", { EngineVersion: "13.22" })],
+      },
+      functions: {
+        "eu-west-1": [{ latest: lambdaFunction("function-9") }, { latest: lambdaFunction("function-6") }],
+        "us-east-1": [{ latest: lambdaFunction("function-1") }],
+      },
+    });
+    await awol(aws).scan();
+    const model = await awol(aws).pageModel();
+    if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+    return { lastScan: model.lastScan!, aws };
+  }
+
+  // Each group of `view`, as its Product, its Release Cycle and its
+  // Components' identifiers.
+  function groupsOf(view: DashboardView) {
+    return view.groups.map(({ product, releaseCycle, components }) => ({
+      product,
+      releaseCycle,
+      identifiers: components.map(({ identifier }) => identifier),
+    }));
+  }
+
+  it("shows only the Components with the chosen Statuses, and counts only those", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const view = dashboardViewOf(lastScan, { ...NO_FILTERS, statuses: ["AWOL", "Untracked"] }, false);
+
+    expect(groupsOf(view)).toEqual([
+      { identifiers: ["function-9:$LATEST", "db-6", "db-1", "function-1:$LATEST"] },
+    ]);
+    expect(view.counts).toEqual({ AWOL: 3, "Falling behind": 0, Current: 0, Untracked: 1 });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows only the Components that pass every filter, any of the values chosen in each", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const byProductAndRegion = dashboardViewOf(
+      lastScan,
+      { ...NO_FILTERS, products: ["AWS Lambda", "RDS MySQL"], regions: ["eu-west-1"] },
+      false,
+    );
+    const byServiceAndRegion = dashboardViewOf(lastScan, { ...NO_FILTERS, services: ["RDS"], regions: ["us-east-1"] }, false);
+    const byEverything = dashboardViewOf(
+      lastScan,
+      { services: ["Lambda"], products: ["AWS Lambda"], regions: ["eu-west-1", "us-east-1"], statuses: ["Current", "Untracked"] },
+      false,
+    );
+
+    expect(groupsOf(byProductAndRegion)).toEqual([{ identifiers: ["function-9:$LATEST", "db-1", "function-6:$LATEST"] }]);
+    expect(byProductAndRegion.counts).toEqual({ AWOL: 2, "Falling behind": 0, Current: 1, Untracked: 0 });
+    expect(groupsOf(byServiceAndRegion)).toEqual([{ identifiers: ["db-6"] }]);
+    expect(groupsOf(byEverything)).toEqual([{ identifiers: ["function-6:$LATEST", "function-1:$LATEST"] }]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("ignores a chosen service, Product or region that no Component of the last Scan has, as after a Scan that no longer finds it", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const view = dashboardViewOf(
+      lastScan,
+      { ...NO_FILTERS, services: ["ElastiCache"], products: ["RDS MariaDB"], regions: ["ap-south-1"] },
+      false,
+    );
+
+    expect(groupsOf(view)).toEqual([
+      {
+        identifiers: [
+          "function-9:$LATEST",
+          "db-6",
+          "db-1",
+          "db-2",
+          "db-3",
+          "function-6:$LATEST",
+          "db-4",
+          "db-5",
+          "function-1:$LATEST",
+        ],
+      },
+    ]);
+    expect(view.counts).toEqual({ AWOL: 3, "Falling behind": 2, Current: 3, Untracked: 1 });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("groups the Components by Product and Release Cycle, each group where its most urgent Component is, keeping their order inside it", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const view = dashboardViewOf(lastScan, NO_FILTERS, true);
+
+    expect(groupsOf(view)).toEqual([
+      { product: "AWS Lambda", releaseCycle: "python3.8", identifiers: ["function-9:$LATEST"] },
+      { product: "RDS PostgreSQL", releaseCycle: "13", identifiers: ["db-6"] },
+      { product: "RDS MySQL", releaseCycle: "8.0.46", identifiers: ["db-1"] },
+      { product: "RDS PostgreSQL", releaseCycle: "14", identifiers: ["db-2", "db-3"] },
+      { product: "AWS Lambda", releaseCycle: "python3.12", identifiers: ["function-6:$LATEST"] },
+      { product: "RDS PostgreSQL", releaseCycle: "16", identifiers: ["db-4"] },
+      { product: "RDS PostgreSQL", releaseCycle: "17", identifiers: ["db-5"] },
+      { product: "AWS Lambda", releaseCycle: undefined, identifiers: ["function-1:$LATEST"] },
+    ]);
+    expect(view.counts).toEqual({ AWOL: 3, "Falling behind": 2, Current: 3, Untracked: 1 });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("offers to filter on the services, Products and regions of the last Scan's Components, in alphabetical order, and on every Status", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    expect(filterOptionsOf(lastScan)).toEqual({
+      services: ["Lambda", "RDS"],
+      products: ["AWS Lambda", "RDS MySQL", "RDS PostgreSQL"],
+      regions: ["eu-west-1", "us-east-1"],
+      statuses: ["AWOL", "Falling behind", "Current", "Untracked"],
+    });
     expectOnlyJsonReads(aws);
   });
 });

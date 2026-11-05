@@ -5,6 +5,13 @@ export type Status = "AWOL" | "Falling behind" | "Current" | "Untracked";
 // Most urgent first.
 export const STATUSES: Status[] = ["AWOL", "Falling behind", "Current", "Untracked"];
 
+// How many of `components` have each Status.
+export function countsOf(components: { status: Status }[]): Record<Status, number> {
+  return Object.fromEntries(
+    STATUSES.map((status) => [status, components.filter((component) => component.status === status).length]),
+  ) as Record<Status, number>;
+}
+
 // How close End of life has to be for a Component to be Falling behind.
 const FALLING_BEHIND_DAYS = 180;
 
