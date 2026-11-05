@@ -3,6 +3,7 @@ import type { ReleaseCycle } from "../endoflife/release-cycles.ts";
 import type { ComponentReading, ExtendedSupport, Service, SupportDates } from "./component.ts";
 import { type Drift, driftFrom, driftFromCycle, newestCycleOf, withHighestLatestPatch } from "./drift.ts";
 import { readElastiCacheComponents } from "./elasticache.ts";
+import { readOpenSearchComponents } from "./opensearch.ts";
 import { readRdsComponents } from "./rds.ts";
 
 // How many regions a Scan reads at once.
@@ -74,7 +75,11 @@ export async function runScan(
 // The Components of every service in `region`, one service at a time, so a
 // region makes one call at once.
 async function readComponents(aws: AwsRunner, region: string): Promise<ComponentReading[]> {
-  return [...(await readRdsComponents(aws, region)), ...(await readElastiCacheComponents(aws, region))];
+  return [
+    ...(await readRdsComponents(aws, region)),
+    ...(await readElastiCacheComponents(aws, region)),
+    ...(await readOpenSearchComponents(aws, region)),
+  ];
 }
 
 // The regions from `account list-regions` with status ENABLED or

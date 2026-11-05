@@ -60,10 +60,11 @@ export function lowestVersion(versions: string[]): string | undefined {
 }
 
 // Orders versions by their dotted numbers, skipping a dotted word such as
-// Aurora MySQL's `mysql_aurora`, then with a build suffix after the version
-// it builds on: `8.0.46` before `8.0.46-rds.20260624` before
-// `8.0.46-rds.20260908` before `8.4.5`, and `8.0.mysql_aurora.3.14.0` before
-// `8.4.mysql_aurora.8.4.7`.
+// Aurora MySQL's `mysql_aurora` and an engine in front such as OpenSearch's
+// `OpenSearch_`, then with a build suffix after the version it builds on:
+// `8.0.46` before `8.0.46-rds.20260624` before `8.0.46-rds.20260908` before
+// `8.4.5`, `8.0.mysql_aurora.3.14.0` before `8.4.mysql_aurora.8.4.7`, and
+// `OpenSearch_2.19` before `OpenSearch_3.1`.
 export function compareVersions(a: string, b: string): number {
   const [aNumbers = "", aSuffix] = splitSuffix(a);
   const [bNumbers = "", bSuffix] = splitSuffix(b);
@@ -81,6 +82,7 @@ export function compareVersions(a: string, b: string): number {
 
 function dottedNumbers(version: string): number[] {
   return version
+    .replace(/^[A-Za-z]+_/, "")
     .split(".")
     .filter((part) => /^\d+$/.test(part))
     .map(Number);

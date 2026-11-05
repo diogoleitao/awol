@@ -1,0 +1,7 @@
+{
+  "DomainStatusList": [
+    { "DomainName": "domain-1", "EngineVersion": "OpenSearch_2.11" },
+    { "DomainName": "domain-2", "EngineVersion": "Elasticsearch_7.10" },
+    { "DomainName": "domain-3", "EngineVersion": "OpenSearch_3.5" }
+  ]
+}

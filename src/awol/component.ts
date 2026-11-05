@@ -1,5 +1,5 @@
 // The AWS services awol reads Components from.
-export type Service = "RDS" | "ElastiCache";
+export type Service = "RDS" | "ElastiCache" | "OpenSearch";
 
 // A Product awol reads from AWS: its name, its endoflife.date product, the
 // Release Cycle names a version could match, most specific first, and a

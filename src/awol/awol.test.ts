@@ -72,6 +72,17 @@ import describeServerlessCaches from "./fixtures/elasticache-describe-serverless
 import redisCacheEngineVersions from "./fixtures/elasticache-describe-cache-engine-versions/redis.json" with { type: "json" };
 // Recorded from endoflife.date's API on 2026-11-05.
 import elasticacheRedis from "./fixtures/endoflife/amazon-elasticache-redis.json" with { type: "json" };
+// Written by hand in the shape of `aws opensearch describe-domains --region
+// eu-west-1 --domain-names <name>... --output json`, since no enabled region
+// of the recorded account has a domain: an OpenSearch 2.11, an Elasticsearch
+// 7.10 and an OpenSearch 3.5 domain, named domain-1 to domain-3.
+import describeDomains from "./fixtures/opensearch-describe-domains.json" with { type: "json" };
+// Recorded from `aws opensearch list-versions --region eu-west-1 --output
+// json` on 2026-11-05. The answer is the same for every account.
+import openSearchVersions from "./fixtures/opensearch-list-versions.json" with { type: "json" };
+// Recorded from endoflife.date's API on 2026-11-05.
+import amazonOpenSearch from "./fixtures/endoflife/amazon-opensearch.json" with { type: "json" };
+import amazonElasticsearch from "./fixtures/endoflife/amazon-elasticsearch.json" with { type: "json" };
 
 const NOW = new Date("2026-11-03T12:00:00Z");
 
@@ -125,6 +136,8 @@ const RECORDED_PRODUCTS: Record<string, { etag: string; body: unknown }> = {
   "amazon-aurora-postgresql": { etag: '"d520db051d8e2e26ef6857339573e37a-ssl"', body: auroraPostgresql },
   "amazon-aurora-mysql": { etag: '"9df9b18955a960f890a086ca94b02c84-ssl"', body: auroraMysql },
   "amazon-elasticache-redis": { etag: '"0670dbddd644eb99ba19e1206ad8360e-ssl"', body: elasticacheRedis },
+  "amazon-opensearch": { etag: '"a5edfe1e32572074c3582e03213b7b68-ssl"', body: amazonOpenSearch },
+  "amazon-elasticsearch": { etag: '"04c356436f35e51ed1567eb238e49050-ssl"', body: amazonElasticsearch },
 };
 
 // Replays endoflife.date: each product's recorded body with its ETag, or a
@@ -384,6 +397,45 @@ function describeCacheEngineVersionsIn(region: string, engine: string) {
   return `elasticache describe-cache-engine-versions --region ${region} --engine ${engine} --output json`;
 }
 
+type Domain = { DomainName: string; EngineVersion: string };
+
+const DOMAINS: Domain[] = describeDomains.DomainStatusList;
+
+// The hand-written domain `identifier`, with the fields in `changes`.
+function domain(identifier: string, changes: Partial<Domain> = {}): Domain {
+  return { ...DOMAINS.find(({ DomainName }) => DomainName === identifier)!, ...changes };
+}
+
+function listDomainNamesIn(region: string) {
+  return `opensearch list-domain-names --region ${region} --output json`;
+}
+
+function describeDomainsIn(region: string, names: string[]) {
+  return `opensearch describe-domains --region ${region} --domain-names ${names.join(" ")} --output json`;
+}
+
+function listVersionsIn(region: string) {
+  return `opensearch list-versions --region ${region} --output json`;
+}
+
+// The answers for `domains` in `region`: their names with the engine each
+// runs, and `describe-domains` for them five names at a time, the most AWS
+// takes in one call.
+function domainAnswers(region: string, domains: Domain[]): Record<string, Answer> {
+  const answers: Record<string, Answer> = {
+    [listDomainNamesIn(region)]: {
+      stdout: JSON.stringify({
+        DomainNames: domains.map(({ DomainName, EngineVersion }) => ({ DomainName, EngineType: EngineVersion.split("_")[0] })),
+      }),
+    },
+  };
+  for (let i = 0; i < domains.length; i += 5) {
+    const batch = domains.slice(i, i + 5);
+    answers[describeDomainsIn(region, batch.map(({ DomainName }) => DomainName))] = { stdout: JSON.stringify({ DomainStatusList: batch }) };
+  }
+  return answers;
+}
+
 type AccountContents = {
   regions?: { RegionName: string; RegionOptStatus: string }[];
   instances?: Record<string, DbInstance[]>;
@@ -393,14 +445,16 @@ type AccountContents = {
   replicationGroups?: Record<string, ReplicationGroup[]>;
   cacheClusters?: Record<string, CacheCluster[]>;
   serverlessCaches?: Record<string, ServerlessCache[]>;
+  domains?: Record<string, Domain[]>;
 };
 
 // The recorded account, signed in: its regions, its RDS instances and DB
-// clusters and its ElastiCache replication groups, cache clusters and
-// Serverless caches by region, where every enabled region not given has
-// none, AWS's RDS lifecycles and offered versions by Engine in each region,
-// the recorded ones unless given, and the recorded ElastiCache offered
-// versions. A region with no answer fails the Scan.
+// clusters, its ElastiCache replication groups, cache clusters and
+// Serverless caches and its OpenSearch domains by region, where every
+// enabled region not given has none, AWS's RDS lifecycles and offered
+// versions by Engine in each region, the recorded ones unless given, and the
+// recorded ElastiCache and OpenSearch offered versions. A region with no
+// answer fails the Scan.
 function account(contents: AccountContents = {}) {
   return fakeAws(accountAnswers(contents));
 }
@@ -414,6 +468,7 @@ function accountAnswers({
   replicationGroups = {},
   cacheClusters = {},
   serverlessCaches = {},
+  domains = {},
 }: AccountContents = {}): Record<string, Answer> {
   const answers: Record<string, Answer> = {
     [CALLER_IDENTITY]: SIGNED_IN,
@@ -426,6 +481,7 @@ function accountAnswers({
     ...Object.keys(replicationGroups),
     ...Object.keys(cacheClusters),
     ...Object.keys(serverlessCaches),
+    ...Object.keys(domains),
   ]) {
     answers[describeDbInstancesIn(region)] = { stdout: JSON.stringify({ DBInstances: instances[region] ?? [] }) };
     answers[describeDbClustersIn(region)] = { stdout: JSON.stringify({ DBClusters: clusters[region] ?? [] }) };
@@ -441,6 +497,8 @@ function accountAnswers({
     for (const [engine, answer] of Object.entries(CACHE_ENGINE_VERSIONS)) {
       answers[describeCacheEngineVersionsIn(region, engine)] = { stdout: JSON.stringify(answer) };
     }
+    Object.assign(answers, domainAnswers(region, domains[region] ?? []));
+    answers[listVersionsIn(region)] = { stdout: JSON.stringify(openSearchVersions) };
   }
   return answers;
 }
@@ -1570,6 +1628,188 @@ describe("ElastiCache Redis OSS caches", () => {
       { identifier: "cache-1", newestOffered: { kind: "behind", version: "7.1" } },
       { identifier: "cache-2", newestOffered: { kind: "none" } },
     ]);
+    expectOnlyJsonReads(aws);
+  });
+});
+
+describe("OpenSearch domains", () => {
+  // The page's Components after a Scan of an account with no RDS and only
+  // `domains` in eu-west-1, on `now`; and the fake runner, to check last.
+  async function scannedDomains(domains: Domain[], now = NOW) {
+    const aws = account({ instances: {}, domains: { "eu-west-1": domains } });
+    await awol(aws, now).scan();
+    const model = await awol(aws, now).pageModel();
+    if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+    return { components: model.lastScan!.components, aws };
+  }
+
+  it("shows an OpenSearch domain as one Component", async () => {
+    const { components, aws } = await scannedDomains([domain("domain-1")]);
+
+    expect(components).toEqual([
+      {
+        service: "OpenSearch",
+        product: "OpenSearch",
+        region: "eu-west-1",
+        identifier: "domain-1",
+        version: "OpenSearch_2.11",
+        releaseCycle: "2.11",
+        status: "Current",
+        cycleReleaseDate: "2023-11-17",
+        endOfLife: "2027-11-07",
+        extendedSupportEnd: "2028-11-07",
+        sources: { aws: {}, "endoflife.date": { endOfLife: "2027-11-07", extendedSupportEnd: "2028-11-07" } },
+        datesDisagree: false,
+        drift: {
+          latestPatch: { kind: "not-available" },
+          newestCycle: { kind: "behind", version: "3.7" },
+          newestOffered: { kind: "behind", version: "OpenSearch_3.7" },
+        },
+      },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows an Elasticsearch domain as one Component of the Elasticsearch Product", async () => {
+    const { components, aws } = await scannedDomains([domain("domain-2")]);
+
+    expect(components).toEqual([
+      {
+        service: "OpenSearch",
+        product: "Elasticsearch",
+        region: "eu-west-1",
+        identifier: "domain-2",
+        version: "Elasticsearch_7.10",
+        releaseCycle: "7.10",
+        status: "Current",
+        cycleReleaseDate: "2021-04-21",
+        endOfLife: "2027-11-07",
+        extendedSupportEnd: "2030-11-07",
+        sources: { aws: {}, "endoflife.date": { endOfLife: "2027-11-07", extendedSupportEnd: "2030-11-07" } },
+        datesDisagree: false,
+        drift: {
+          latestPatch: { kind: "not-available" },
+          newestCycle: { kind: "none" },
+          newestOffered: { kind: "none" },
+        },
+      },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows a domain whose Release Cycle has no End of life announced as Current, with no End of life", async () => {
+    // endoflife.date announces no End of life for any OpenSearch 3.x cycle.
+    const { components, aws } = await scannedDomains([domain("domain-3")], new Date("2040-01-01T12:00:00Z"));
+
+    expect(components).toEqual([
+      {
+        service: "OpenSearch",
+        product: "OpenSearch",
+        region: "eu-west-1",
+        identifier: "domain-3",
+        version: "OpenSearch_3.5",
+        releaseCycle: "3.5",
+        status: "Current",
+        cycleReleaseDate: "2026-03-18",
+        sources: { aws: {}, "endoflife.date": {} },
+        datesDisagree: false,
+        drift: {
+          latestPatch: { kind: "not-available" },
+          newestCycle: { kind: "behind", version: "3.7" },
+          newestOffered: { kind: "behind", version: "OpenSearch_3.7" },
+        },
+      },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it.each([
+    // By x.y on amazon-opensearch. endoflife.date ends standard support for
+    // 1.3 and 2.11 on 2027-11-07 and for 2.9 on 2025-11-07.
+    ["OpenSearch_1.3", "OpenSearch", "1.3", "Current"],
+    ["OpenSearch_2.9", "OpenSearch", "2.9", "AWOL"],
+    ["OpenSearch_2.11", "OpenSearch", "2.11", "Current"],
+    ["OpenSearch_3.7", "OpenSearch", "3.7", "Current"],
+    // By x.y on amazon-elasticsearch. endoflife.date ends standard support for
+    // 6.8 and 7.10 on 2027-11-07 and for 5.6 and 7.1 on 2025-11-07.
+    ["Elasticsearch_5.6", "Elasticsearch", "5.6", "AWOL"],
+    ["Elasticsearch_6.8", "Elasticsearch", "6.8", "Current"],
+    ["Elasticsearch_7.1", "Elasticsearch", "7.1", "AWOL"],
+    ["Elasticsearch_7.10", "Elasticsearch", "7.10", "Current"],
+  ])("matches a domain on %s to %s Release Cycle %s", async (version, product, releaseCycle, status) => {
+    const { components, aws } = await scannedDomains([domain("domain-1", { EngineVersion: version })]);
+
+    expect(components).toMatchObject([{ product, version, releaseCycle, status }]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it.each([
+    ["OpenSearch_4.0", "OpenSearch"],
+    // Elasticsearch 7.10 is the last; 2.11 is an OpenSearch cycle only.
+    ["Elasticsearch_2.11", "Elasticsearch"],
+  ])("shows a domain on %s, which matches no Release Cycle, as Untracked", async (version, product) => {
+    const { components, aws } = await scannedDomains([domain("domain-1", { EngineVersion: version })]);
+
+    expect(components).toMatchObject([{ product, version, releaseCycle: undefined, status: "Untracked" }]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it.each([
+    // endoflife.date gives no cycle a Latest patch, so the Newest cycle is the
+    // highest name, 3.7 and 7.10; AWS offers up to OpenSearch_3.7 and
+    // Elasticsearch_7.10 in eu-west-1, each engine compared with its own.
+    ["OpenSearch_2.11", { latestPatch: { kind: "not-available" }, newestCycle: { kind: "behind", version: "3.7" }, newestOffered: { kind: "behind", version: "OpenSearch_3.7" } }],
+    ["OpenSearch_3.7", { latestPatch: { kind: "not-available" }, newestCycle: { kind: "none" }, newestOffered: { kind: "none" } }],
+    ["Elasticsearch_7.9", { latestPatch: { kind: "not-available" }, newestCycle: { kind: "behind", version: "7.10" }, newestOffered: { kind: "behind", version: "Elasticsearch_7.10" } }],
+    ["Elasticsearch_7.10", { latestPatch: { kind: "not-available" }, newestCycle: { kind: "none" }, newestOffered: { kind: "none" } }],
+  ])("shows %s's Drift", async (version, drift) => {
+    const { components, aws } = await scannedDomains([domain("domain-1", { EngineVersion: version })]);
+
+    expect(components[0]!.drift).toEqual(drift);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("reads the Newest offered version in each Component's own region", async () => {
+    // The recorded versions, with nothing past OpenSearch 3.5 offered in
+    // us-west-2.
+    const older = { Versions: openSearchVersions.Versions.filter((version) => version !== "OpenSearch_3.7") };
+    const aws = fakeAws({
+      ...accountAnswers({
+        instances: {},
+        domains: { "eu-west-1": [domain("domain-3")], "us-west-2": [domain("domain-3", { DomainName: "domain-4" })] },
+      }),
+      [listVersionsIn("us-west-2")]: { stdout: JSON.stringify(older) },
+    });
+
+    await awol(aws).scan();
+
+    const model = await awol(aws).pageModel();
+    expect(model.kind === "signed-in" && model.lastScan?.components.map(({ identifier, drift }) => ({ identifier, newestOffered: drift.newestOffered }))).toEqual([
+      { identifier: "domain-3", newestOffered: { kind: "behind", version: "OpenSearch_3.7" } },
+      { identifier: "domain-4", newestOffered: { kind: "none" } },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows every domain of a region with more than five, the most AWS describes in one call", async () => {
+    const domains = Array.from({ length: 7 }, (_, i) => domain("domain-1", { DomainName: `domain-${i + 4}` }));
+
+    const { components, aws } = await scannedDomains(domains);
+
+    expect(components.map(({ identifier }) => identifier).sort()).toEqual(domains.map(({ DomainName }) => DomainName).sort());
+    expectOnlyJsonReads(aws);
+  });
+
+  it("leaves out a domain AWS lists but no longer describes, as when deleted between two calls", async () => {
+    const aws = fakeAws({
+      ...accountAnswers({ instances: {}, domains: { "eu-west-1": [domain("domain-1"), domain("domain-2")] } }),
+      [describeDomainsIn("eu-west-1", ["domain-1", "domain-2"])]: { stdout: JSON.stringify({ DomainStatusList: [domain("domain-1")] }) },
+    });
+
+    await awol(aws).scan();
+
+    const model = await awol(aws).pageModel();
+    expect(model.kind === "signed-in" && model.lastScan?.components.map(({ identifier }) => identifier)).toEqual(["domain-1"]);
     expectOnlyJsonReads(aws);
   });
 });
