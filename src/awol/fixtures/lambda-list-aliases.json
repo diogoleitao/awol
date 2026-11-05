@@ -1,0 +1,8 @@
+{
+  "Aliases": [
+    { "Name": "beta", "FunctionVersion": "$LATEST" },
+    { "Name": "canary", "FunctionVersion": "12", "RoutingConfig": { "AdditionalVersionWeights": { "11": 0.1 } } },
+    { "Name": "live", "FunctionVersion": "12" },
+    { "Name": "previous", "FunctionVersion": "9" }
+  ]
+}

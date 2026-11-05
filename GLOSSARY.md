@@ -76,7 +76,7 @@ _Avoid_: Unknown, unmatched, N/A
 The newest version of the line a Component's Release Cycle belongs to. RDS MySQL Release Cycle 8.4.7 belongs to the 8.4 line, so its Latest patch is 8.4's, not 8.4.7 itself.
 
 **Newest cycle**:
-The most recent Release Cycle of a Component's Product.
+The most recent Release Cycle of a Component's Product. For a Lambda runtime it is the most recent runtime of the same language: python3.9's is python3.14, not the newest Node.js or Java runtime.
 _Avoid_: Latest version, latest major
 
 **Newest offered**:

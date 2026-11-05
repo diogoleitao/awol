@@ -1,14 +1,22 @@
+import type { ReleaseCycle } from "../endoflife/release-cycles.ts";
+
 // The AWS services awol reads Components from.
-export type Service = "RDS" | "ElastiCache" | "OpenSearch";
+export type Service = "RDS" | "ElastiCache" | "OpenSearch" | "Lambda";
 
 // A Product awol reads from AWS: its name, its endoflife.date product, the
 // Release Cycle names a version could match, most specific first, and a
-// version as endoflife.date numbers Latest patches.
+// version as endoflife.date numbers Latest patches. A Product whose dates
+// mean something else on endoflife.date reads each Release Cycle with
+// `readReleaseCycle`, and one whose Newest cycle is not the newest of all its
+// Release Cycles gives the Newest cycle for a Component's Release Cycle with
+// `newestCycle`.
 export type Product = {
   name: string;
   endOfLifeProduct: string;
   cycleNames(version: string): string[];
   latestPatchVersion(version: string): string;
+  readReleaseCycle?(cycle: ReleaseCycle): ReleaseCycle;
+  newestCycle?(cycles: ReleaseCycle[], releaseCycle: ReleaseCycle): ReleaseCycle | undefined;
 };
 
 // The End of life and end of Extended Support one source gives, where it

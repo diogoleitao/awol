@@ -83,6 +83,18 @@ import openSearchVersions from "./fixtures/opensearch-list-versions.json" with {
 // Recorded from endoflife.date's API on 2026-11-05.
 import amazonOpenSearch from "./fixtures/endoflife/amazon-opensearch.json" with { type: "json" };
 import amazonElasticsearch from "./fixtures/endoflife/amazon-elasticsearch.json" with { type: "json" };
+// Recorded from `aws lambda list-functions --region eu-west-1 --output json`
+// on 2026-11-05: ten of the account's 92 functions, one per Runtime and
+// PackageType, kept to the fields that identify nothing and renamed
+// function-1 to function-10. Every other enabled region was not read.
+import listFunctions from "./fixtures/lambda-list-functions.json" with { type: "json" };
+// Written by hand in the shape of `aws lambda list-aliases --region eu-west-1
+// --function-name <name> --output json`, since no function of the recorded
+// account has an alias: an alias on $LATEST, a weighted alias on versions 12
+// and 11, a second alias on 12, and one on 9.
+import listAliases from "./fixtures/lambda-list-aliases.json" with { type: "json" };
+// Recorded from endoflife.date's API on 2026-11-05.
+import awsLambda from "./fixtures/endoflife/aws-lambda.json" with { type: "json" };
 
 const NOW = new Date("2026-11-03T12:00:00Z");
 
@@ -138,6 +150,7 @@ const RECORDED_PRODUCTS: Record<string, { etag: string; body: unknown }> = {
   "amazon-elasticache-redis": { etag: '"0670dbddd644eb99ba19e1206ad8360e-ssl"', body: elasticacheRedis },
   "amazon-opensearch": { etag: '"a5edfe1e32572074c3582e03213b7b68-ssl"', body: amazonOpenSearch },
   "amazon-elasticsearch": { etag: '"04c356436f35e51ed1567eb238e49050-ssl"', body: amazonElasticsearch },
+  "aws-lambda": { etag: '"7010828a001da46c660286efd80cb276-ssl"', body: awsLambda },
 };
 
 // Replays endoflife.date: each product's recorded body with its ETag, or a
@@ -436,6 +449,50 @@ function domainAnswers(region: string, domains: Domain[]): Record<string, Answer
   return answers;
 }
 
+type LambdaFunction = { FunctionName: string; Runtime?: string; PackageType: string; Version: string };
+
+type Alias = { Name: string; FunctionVersion: string; RoutingConfig?: { AdditionalVersionWeights: Record<string, number> } };
+
+const FUNCTIONS: LambdaFunction[] = listFunctions.Functions;
+
+const ALIASES: Alias[] = listAliases.Aliases;
+
+// The recorded function `identifier`'s $LATEST, with the fields in `changes`.
+function lambdaFunction(identifier: string, changes: Partial<LambdaFunction> = {}): LambdaFunction {
+  return { ...FUNCTIONS.find(({ FunctionName }) => FunctionName === identifier)!, ...changes };
+}
+
+// A Lambda function as an account has it: its $LATEST, its aliases, and its
+// published versions as `get-function-configuration` gives each.
+type DeployedFunction = { latest: LambdaFunction; aliases?: Alias[]; versions?: LambdaFunction[] };
+
+function listFunctionsIn(region: string) {
+  return `lambda list-functions --region ${region} --output json`;
+}
+
+function listAliasesIn(region: string, name: string) {
+  return `lambda list-aliases --region ${region} --function-name ${name} --output json`;
+}
+
+function getFunctionConfigurationIn(region: string, name: string, version: string) {
+  return `lambda get-function-configuration --region ${region} --function-name ${name} --qualifier ${version} --output json`;
+}
+
+// The answers for `functions` in `region`: each one's $LATEST, its aliases,
+// and each of its published versions.
+function functionAnswers(region: string, functions: DeployedFunction[]): Record<string, Answer> {
+  const answers: Record<string, Answer> = {
+    [listFunctionsIn(region)]: { stdout: JSON.stringify({ Functions: functions.map(({ latest }) => latest) }) },
+  };
+  for (const { latest, aliases = [], versions = [] } of functions) {
+    answers[listAliasesIn(region, latest.FunctionName)] = { stdout: JSON.stringify({ Aliases: aliases }) };
+    for (const version of versions) {
+      answers[getFunctionConfigurationIn(region, latest.FunctionName, version.Version)] = { stdout: JSON.stringify(version) };
+    }
+  }
+  return answers;
+}
+
 type AccountContents = {
   regions?: { RegionName: string; RegionOptStatus: string }[];
   instances?: Record<string, DbInstance[]>;
@@ -446,15 +503,16 @@ type AccountContents = {
   cacheClusters?: Record<string, CacheCluster[]>;
   serverlessCaches?: Record<string, ServerlessCache[]>;
   domains?: Record<string, Domain[]>;
+  functions?: Record<string, DeployedFunction[]>;
 };
 
 // The recorded account, signed in: its regions, its RDS instances and DB
 // clusters, its ElastiCache replication groups, cache clusters and
-// Serverless caches and its OpenSearch domains by region, where every
-// enabled region not given has none, AWS's RDS lifecycles and offered
-// versions by Engine in each region, the recorded ones unless given, and the
-// recorded ElastiCache and OpenSearch offered versions. A region with no
-// answer fails the Scan.
+// Serverless caches, its OpenSearch domains and its Lambda functions by
+// region, where every enabled region not given has none, AWS's RDS
+// lifecycles and offered versions by Engine in each region, the recorded ones
+// unless given, and the recorded ElastiCache and OpenSearch offered versions.
+// A region with no answer fails the Scan.
 function account(contents: AccountContents = {}) {
   return fakeAws(accountAnswers(contents));
 }
@@ -469,6 +527,7 @@ function accountAnswers({
   cacheClusters = {},
   serverlessCaches = {},
   domains = {},
+  functions = {},
 }: AccountContents = {}): Record<string, Answer> {
   const answers: Record<string, Answer> = {
     [CALLER_IDENTITY]: SIGNED_IN,
@@ -482,6 +541,7 @@ function accountAnswers({
     ...Object.keys(cacheClusters),
     ...Object.keys(serverlessCaches),
     ...Object.keys(domains),
+    ...Object.keys(functions),
   ]) {
     answers[describeDbInstancesIn(region)] = { stdout: JSON.stringify({ DBInstances: instances[region] ?? [] }) };
     answers[describeDbClustersIn(region)] = { stdout: JSON.stringify({ DBClusters: clusters[region] ?? [] }) };
@@ -499,6 +559,7 @@ function accountAnswers({
     }
     Object.assign(answers, domainAnswers(region, domains[region] ?? []));
     answers[listVersionsIn(region)] = { stdout: JSON.stringify(openSearchVersions) };
+    Object.assign(answers, functionAnswers(region, functions[region] ?? []));
   }
   return answers;
 }
@@ -1810,6 +1871,190 @@ describe("OpenSearch domains", () => {
 
     const model = await awol(aws).pageModel();
     expect(model.kind === "signed-in" && model.lastScan?.components.map(({ identifier }) => identifier)).toEqual(["domain-1"]);
+    expectOnlyJsonReads(aws);
+  });
+});
+
+describe("Lambda functions", () => {
+  // The page's Components after a Scan of an account with no RDS and only
+  // `functions` in eu-west-1, on `now`; and the fake runner, to check last.
+  async function scannedFunctions(functions: DeployedFunction[], now = NOW) {
+    const aws = account({ instances: {}, functions: { "eu-west-1": functions } });
+    await awol(aws, now).scan();
+    const model = await awol(aws, now).pageModel();
+    if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+    return { components: model.lastScan!.components, aws };
+  }
+
+  it("shows a function's $LATEST as one Component, its runtime's deprecation date as End of life", async () => {
+    const { components, aws } = await scannedFunctions([{ latest: lambdaFunction("function-6") }]);
+
+    expect(components).toEqual([
+      {
+        service: "Lambda",
+        product: "AWS Lambda",
+        region: "eu-west-1",
+        identifier: "function-6:$LATEST",
+        version: "python3.12",
+        releaseCycle: "python3.12",
+        status: "Current",
+        cycleReleaseDate: "2023-12-14",
+        endOfLife: "2028-10-31",
+        sources: { aws: {}, "endoflife.date": { endOfLife: "2028-10-31" } },
+        datesDisagree: false,
+        drift: {
+          latestPatch: { kind: "not-available" },
+          newestCycle: { kind: "behind", version: "python3.14" },
+          newestOffered: { kind: "not-available" },
+        },
+      },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  // The recorded function function-6, on python3.12, with the hand-written
+  // aliases named in `aliasNames` and published versions 9 to 12, version 9
+  // on python3.9, 10 on python3.10, 11 on python3.11 and 12 on python3.12.
+  function aliasedFunction(aliasNames: string[]): DeployedFunction {
+    const latest = lambdaFunction("function-6");
+    return {
+      latest,
+      aliases: ALIASES.filter(({ Name }) => aliasNames.includes(Name)),
+      versions: [9, 10, 11, 12].map((version) => ({ ...latest, Version: `${version}`, Runtime: `python3.${version}` })),
+    };
+  }
+
+  it("shows a published version an alias points to as its own Component, on that version's own runtime", async () => {
+    const { components, aws } = await scannedFunctions([aliasedFunction(["previous"])]);
+
+    expect(components).toEqual([
+      {
+        service: "Lambda",
+        product: "AWS Lambda",
+        region: "eu-west-1",
+        identifier: "function-6:9",
+        version: "python3.9",
+        releaseCycle: "python3.9",
+        status: "AWOL",
+        cycleReleaseDate: "2021-08-16",
+        endOfLife: "2025-12-15",
+        sources: { aws: {}, "endoflife.date": { endOfLife: "2025-12-15" } },
+        datesDisagree: false,
+        drift: {
+          latestPatch: { kind: "not-available" },
+          newestCycle: { kind: "behind", version: "python3.14" },
+          newestOffered: { kind: "not-available" },
+        },
+      },
+      expect.objectContaining({ identifier: "function-6:$LATEST", version: "python3.12", status: "Current" }),
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows each version aliases point to once, including the second version of a weighted alias, and $LATEST once", async () => {
+    const { components, aws } = await scannedFunctions([aliasedFunction(["beta", "canary", "live", "previous"])]);
+
+    expect(components.map(({ identifier, version, status }) => ({ identifier, version, status })).sort((a, b) => a.identifier.localeCompare(b.identifier))).toEqual([
+      { identifier: "function-6:$LATEST", version: "python3.12", status: "Current" },
+      { identifier: "function-6:11", version: "python3.11", status: "Current" },
+      { identifier: "function-6:12", version: "python3.12", status: "Current" },
+      { identifier: "function-6:9", version: "python3.9", status: "AWOL" },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("leaves out a published version no alias points to", async () => {
+    const { components, aws } = await scannedFunctions([aliasedFunction(["live"])]);
+
+    expect(components.map(({ identifier }) => identifier).sort()).toEqual(["function-6:$LATEST", "function-6:12"]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows a function deployed as a container image, which has no runtime, as Untracked with no version", async () => {
+    const { components, aws } = await scannedFunctions([{ latest: lambdaFunction("function-1") }]);
+
+    expect(components).toEqual([
+      {
+        service: "Lambda",
+        product: "AWS Lambda",
+        region: "eu-west-1",
+        identifier: "function-1:$LATEST",
+        status: "Untracked",
+        sources: { aws: {}, "endoflife.date": {} },
+        datesDisagree: false,
+        drift: {
+          latestPatch: { kind: "not-available" },
+          newestCycle: { kind: "not-available" },
+          newestOffered: { kind: "not-available" },
+        },
+      },
+    ]);
+    expect(components[0]!.version).toBeUndefined();
+    expectOnlyJsonReads(aws);
+  });
+
+  it.each([
+    // End of life is the deprecation date: python3.8's 2024-10-14 and
+    // python3.10's 2026-10-31 have passed, though AWS blocks updates to
+    // either only from 2027-08-31.
+    ["python3.8", "AWOL"],
+    ["python3.10", "AWOL"],
+    ["nodejs20.x", "AWOL"],
+    // nodejs22.x reaches End of life on 2027-04-30, within 180 days, and
+    // dotnet9 on 2026-11-10, with no date to block updates announced.
+    ["nodejs22.x", "Falling behind"],
+    ["dotnet9", "Falling behind"],
+    ["python3.11", "Current"],
+    ["provided.al2023", "Current"],
+    ["java8.al2023", "Current"],
+  ])("matches a function on %s to its Release Cycle, %s", async (runtime, status) => {
+    const { components, aws } = await scannedFunctions([{ latest: lambdaFunction("function-6", { Runtime: runtime }) }]);
+
+    expect(components).toMatchObject([{ product: "AWS Lambda", version: runtime, releaseCycle: runtime, status }]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows a function on a runtime endoflife.date does not list as Untracked", async () => {
+    const { components, aws } = await scannedFunctions([{ latest: lambdaFunction("function-6", { Runtime: "python3.99" }) }]);
+
+    expect(components).toMatchObject([{ version: "python3.99", releaseCycle: undefined, status: "Untracked" }]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it.each([
+    // python3.12 reaches End of life on 2028-10-31: Falling behind from 180
+    // days before, and AWOL from that day.
+    ["2028-05-03", "Current"],
+    ["2028-05-04", "Falling behind"],
+    ["2028-10-30", "Falling behind"],
+    ["2028-10-31", "AWOL"],
+  ])("shows a function on python3.12 on %s as %s", async (date, status) => {
+    const { components, aws } = await scannedFunctions([{ latest: lambdaFunction("function-6") }], new Date(`${date}T12:00:00Z`));
+
+    expect(components).toMatchObject([{ releaseCycle: "python3.12", endOfLife: "2028-10-31", status }]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it.each([
+    // The Newest cycle is the newest runtime of the same language, by the
+    // language's version, not the newest of every Lambda runtime.
+    ["python3.8", { kind: "behind", version: "python3.14" }],
+    ["python3.14", { kind: "none" }],
+    ["nodejs20.x", { kind: "behind", version: "nodejs24.x" }],
+    // java25 over the al2023 runtimes endoflife.date lists as released later.
+    ["java17.al2023", { kind: "behind", version: "java25" }],
+    ["java8.al2", { kind: "behind", version: "java25" }],
+    ["java25", { kind: "none" }],
+    // The custom runtimes have no language version, so by release date.
+    ["provided.al2", { kind: "behind", version: "provided.al2023" }],
+    // The old dotnetcore runtimes are .NET too.
+    ["dotnetcore3.1", { kind: "behind", version: "dotnet10" }],
+    ["ruby3.2", { kind: "behind", version: "ruby4.0" }],
+    ["go1.x", { kind: "none" }],
+  ])("shows a function on %s with no Latest patch or Newest offered Drift, and its Newest cycle Drift", async (runtime, newestCycle) => {
+    const { components, aws } = await scannedFunctions([{ latest: lambdaFunction("function-6", { Runtime: runtime }) }]);
+
+    expect(components[0]!.drift).toEqual({ latestPatch: { kind: "not-available" }, newestCycle, newestOffered: { kind: "not-available" } });
     expectOnlyJsonReads(aws);
   });
 });

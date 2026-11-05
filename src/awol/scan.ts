@@ -3,6 +3,7 @@ import type { ReleaseCycle } from "../endoflife/release-cycles.ts";
 import type { ComponentReading, ExtendedSupport, Service, SupportDates } from "./component.ts";
 import { type Drift, driftFrom, driftFromCycle, newestCycleOf, withHighestLatestPatch } from "./drift.ts";
 import { readElastiCacheComponents } from "./elasticache.ts";
+import { readLambdaComponents } from "./lambda.ts";
 import { readOpenSearchComponents } from "./opensearch.ts";
 import { readRdsComponents } from "./rds.ts";
 
@@ -43,10 +44,13 @@ export async function runScan(
   const regions = await enabledRegions(aws);
   const readings = (await mapConcurrently(regions, REGION_CONCURRENCY, (region) => readComponents(aws, region))).flat();
 
-  const endOfLifeProducts = [...new Set(readings.map((reading) => reading.product.endOfLifeProduct))];
+  const products = new Map(readings.map(({ product }) => [product.endOfLifeProduct, product]));
   const cyclesByProduct = new Map(
     await Promise.all(
-      endOfLifeProducts.map(async (endOfLifeProduct) => [endOfLifeProduct, await releaseCycles(endOfLifeProduct)] as const),
+      [...products].map(async ([endOfLifeProduct, product]) => {
+        const cycles = await releaseCycles(endOfLifeProduct);
+        return [endOfLifeProduct, product.readReleaseCycle === undefined ? cycles : cycles.map(product.readReleaseCycle)] as const;
+      }),
     ),
   );
 
@@ -64,7 +68,11 @@ export async function runScan(
           reading.version === undefined ? undefined : product.latestPatchVersion(reading.version),
           withHighestLatestPatch(matched)?.latest,
         ),
-        newestCycle: driftFromCycle(releaseCycle, cycleNames, newestCycleOf(cycles)),
+        newestCycle: driftFromCycle(
+          releaseCycle,
+          cycleNames,
+          releaseCycle !== undefined && product.newestCycle !== undefined ? product.newestCycle(cycles, releaseCycle) : newestCycleOf(cycles),
+        ),
         newestOffered: driftFrom(reading.version, newestOffered),
       };
       return { ...reading, product: product.name, releaseCycle, drift };
@@ -79,6 +87,7 @@ async function readComponents(aws: AwsRunner, region: string): Promise<Component
     ...(await readRdsComponents(aws, region)),
     ...(await readElastiCacheComponents(aws, region)),
     ...(await readOpenSearchComponents(aws, region)),
+    ...(await readLambdaComponents(aws, region)),
   ];
 }
 
