@@ -1,0 +1,121 @@
+{
+  "DBMajorEngineVersions": [
+    {
+      "Engine": "aurora-postgresql",
+      "MajorEngineVersion": "11",
+      "SupportedEngineLifecycles": [
+        {
+          "LifecycleSupportName": "open-source-rds-standard-support",
+          "LifecycleSupportStartDate": "2019-11-26T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2024-02-29T23:59:59.999000+00:00"
+        },
+        {
+          "LifecycleSupportName": "open-source-rds-extended-support",
+          "LifecycleSupportStartDate": "2024-03-01T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2027-03-31T23:59:59.999000+00:00"
+        }
+      ]
+    },
+    {
+      "Engine": "aurora-postgresql",
+      "MajorEngineVersion": "12",
+      "SupportedEngineLifecycles": [
+        {
+          "LifecycleSupportName": "open-source-rds-standard-support",
+          "LifecycleSupportStartDate": "2020-12-23T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2025-02-28T23:59:59.999000+00:00"
+        },
+        {
+          "LifecycleSupportName": "open-source-rds-extended-support",
+          "LifecycleSupportStartDate": "2025-03-01T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2028-02-29T23:59:59.999000+00:00"
+        }
+      ]
+    },
+    {
+      "Engine": "aurora-postgresql",
+      "MajorEngineVersion": "13",
+      "SupportedEngineLifecycles": [
+        {
+          "LifecycleSupportName": "open-source-rds-standard-support",
+          "LifecycleSupportStartDate": "2021-08-26T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2026-02-28T23:59:59.999000+00:00"
+        },
+        {
+          "LifecycleSupportName": "open-source-rds-extended-support",
+          "LifecycleSupportStartDate": "2026-03-01T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2029-02-28T23:59:59.999000+00:00"
+        }
+      ]
+    },
+    {
+      "Engine": "aurora-postgresql",
+      "MajorEngineVersion": "14",
+      "SupportedEngineLifecycles": [
+        {
+          "LifecycleSupportName": "open-source-rds-standard-support",
+          "LifecycleSupportStartDate": "2022-03-10T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2027-02-28T23:59:59.999000+00:00"
+        },
+        {
+          "LifecycleSupportName": "open-source-rds-extended-support",
+          "LifecycleSupportStartDate": "2027-03-01T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2030-02-28T23:59:59.999000+00:00"
+        }
+      ]
+    },
+    {
+      "Engine": "aurora-postgresql",
+      "MajorEngineVersion": "15",
+      "SupportedEngineLifecycles": [
+        {
+          "LifecycleSupportName": "open-source-rds-standard-support",
+          "LifecycleSupportStartDate": "2023-02-08T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2028-02-29T23:59:59.999000+00:00"
+        },
+        {
+          "LifecycleSupportName": "open-source-rds-extended-support",
+          "LifecycleSupportStartDate": "2028-03-01T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2031-02-28T23:59:59.999000+00:00"
+        }
+      ]
+    },
+    {
+      "Engine": "aurora-postgresql",
+      "MajorEngineVersion": "16",
+      "SupportedEngineLifecycles": [
+        {
+          "LifecycleSupportName": "open-source-rds-standard-support",
+          "LifecycleSupportStartDate": "2024-01-31T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2029-02-28T23:59:59.999000+00:00"
+        },
+        {
+          "LifecycleSupportName": "open-source-rds-extended-support",
+          "LifecycleSupportStartDate": "2029-03-01T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2032-02-29T23:59:59.999000+00:00"
+        }
+      ]
+    },
+    {
+      "Engine": "aurora-postgresql",
+      "MajorEngineVersion": "17",
+      "SupportedEngineLifecycles": [
+        {
+          "LifecycleSupportName": "open-source-rds-standard-support",
+          "LifecycleSupportStartDate": "2025-05-01T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2030-02-28T23:59:59.999000+00:00"
+        },
+        {
+          "LifecycleSupportName": "open-source-rds-extended-support",
+          "LifecycleSupportStartDate": "2030-03-01T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2033-02-28T23:59:59.999000+00:00"
+        }
+      ]
+    },
+    {
+      "Engine": "aurora-postgresql",
+      "MajorEngineVersion": "18",
+      "SupportedEngineLifecycles": []
+    }
+  ]
+}

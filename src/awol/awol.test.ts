@@ -22,22 +22,36 @@ import listRegions from "./fixtures/account-list-regions.json" with { type: "jso
 // to the fields that identify nothing and renamed db-1 to db-5. Every other
 // enabled region answered with no instances.
 import describeDbInstances from "./fixtures/rds-describe-db-instances.json" with { type: "json" };
+// Written by hand in the shape of `aws rds describe-db-clusters --region
+// eu-west-1 --output json`, since no enabled region of the recorded account
+// has a DB cluster: an Aurora PostgreSQL cluster, an Aurora MySQL cluster, a
+// Multi-AZ DB cluster, a DocumentDB cluster and a Neptune cluster, named
+// cluster-1 to cluster-5.
+import describeDbClusters from "./fixtures/rds-describe-db-clusters.json" with { type: "json" };
 // Recorded from `aws rds describe-db-major-engine-versions --region eu-west-1
-// --engine <engine> --output json` on 2026-11-03. The answer is the same for
-// every account.
+// --engine <engine> --output json` on 2026-11-03, and on 2026-11-05 for the
+// Aurora engines. The answer is the same for every account.
 import postgresMajorVersions from "./fixtures/rds-describe-db-major-engine-versions/postgres.json" with { type: "json" };
 import mysqlMajorVersions from "./fixtures/rds-describe-db-major-engine-versions/mysql.json" with { type: "json" };
 import mariadbMajorVersions from "./fixtures/rds-describe-db-major-engine-versions/mariadb.json" with { type: "json" };
+import auroraPostgresqlMajorVersions from "./fixtures/rds-describe-db-major-engine-versions/aurora-postgresql.json" with { type: "json" };
+import auroraMysqlMajorVersions from "./fixtures/rds-describe-db-major-engine-versions/aurora-mysql.json" with { type: "json" };
 // Recorded from `aws rds describe-db-engine-versions --region eu-west-1
-// --engine <engine> --output json` on 2026-11-03, kept to the fields that
-// name each version. The answer is the same for every account.
+// --engine <engine> --output json` on 2026-11-03, and on 2026-11-05 for the
+// Aurora engines, kept to the fields that name each version. The answer is
+// the same for every account.
 import postgresEngineVersions from "./fixtures/rds-describe-db-engine-versions/postgres.json" with { type: "json" };
 import mysqlEngineVersions from "./fixtures/rds-describe-db-engine-versions/mysql.json" with { type: "json" };
 import mariadbEngineVersions from "./fixtures/rds-describe-db-engine-versions/mariadb.json" with { type: "json" };
-// Recorded from endoflife.date's API on 2026-11-03.
+import auroraPostgresqlEngineVersions from "./fixtures/rds-describe-db-engine-versions/aurora-postgresql.json" with { type: "json" };
+import auroraMysqlEngineVersions from "./fixtures/rds-describe-db-engine-versions/aurora-mysql.json" with { type: "json" };
+// Recorded from endoflife.date's API on 2026-11-03, and on 2026-11-05 for the
+// Aurora products.
 import rdsPostgresql from "./fixtures/endoflife/amazon-rds-postgresql.json" with { type: "json" };
 import rdsMysql from "./fixtures/endoflife/amazon-rds-mysql.json" with { type: "json" };
 import rdsMariadb from "./fixtures/endoflife/amazon-rds-mariadb.json" with { type: "json" };
+import auroraPostgresql from "./fixtures/endoflife/amazon-aurora-postgresql.json" with { type: "json" };
+import auroraMysql from "./fixtures/endoflife/amazon-aurora-mysql.json" with { type: "json" };
 
 const NOW = new Date("2026-11-03T12:00:00Z");
 
@@ -88,6 +102,8 @@ const RECORDED_PRODUCTS: Record<string, { etag: string; body: unknown }> = {
   "amazon-rds-postgresql": { etag: '"8657de974096f1d9de7976eb94ccaf05-ssl"', body: rdsPostgresql },
   "amazon-rds-mysql": { etag: '"8274b83b7bb3c944a2eed9fe4d991165-ssl"', body: rdsMysql },
   "amazon-rds-mariadb": { etag: '"66f9d176975fe23036020e9cda3d2073-ssl"', body: rdsMariadb },
+  "amazon-aurora-postgresql": { etag: '"d520db051d8e2e26ef6857339573e37a-ssl"', body: auroraPostgresql },
+  "amazon-aurora-mysql": { etag: '"9df9b18955a960f890a086ca94b02c84-ssl"', body: auroraMysql },
 };
 
 // Replays endoflife.date: each product's recorded body with its ETag, or a
@@ -243,12 +259,18 @@ function describeDbInstancesIn(region: string) {
   return `rds describe-db-instances --region ${region} --output json`;
 }
 
+function describeDbClustersIn(region: string) {
+  return `rds describe-db-clusters --region ${region} --output json`;
+}
+
 // AWS's lifecycle answers by Engine, recorded in eu-west-1 and replayed for
 // every region.
 const MAJOR_VERSIONS: Record<string, unknown> = {
   postgres: postgresMajorVersions,
   mysql: mysqlMajorVersions,
   mariadb: mariadbMajorVersions,
+  "aurora-postgresql": auroraPostgresqlMajorVersions,
+  "aurora-mysql": auroraMysqlMajorVersions,
 };
 
 function describeMajorVersionsIn(region: string, engine: string) {
@@ -261,6 +283,8 @@ const ENGINE_VERSIONS: Record<string, unknown> = {
   postgres: postgresEngineVersions,
   mysql: mysqlEngineVersions,
   mariadb: mariadbEngineVersions,
+  "aurora-postgresql": auroraPostgresqlEngineVersions,
+  "aurora-mysql": auroraMysqlEngineVersions,
 };
 
 function describeEngineVersionsIn(region: string, engine: string) {
@@ -278,17 +302,27 @@ function instance(identifier: string, changes: Partial<DbInstance> = {}): DbInst
   return { ...describeDbInstances.DBInstances[4]!, DBInstanceIdentifier: identifier, ...changes };
 }
 
+type DbCluster = { DBClusterIdentifier: string; Engine: string; EngineVersion: string; EngineLifecycleSupport?: string };
+
+const CLUSTERS: DbCluster[] = describeDbClusters.DBClusters;
+
+// The hand-written cluster `identifier`, with the fields in `changes`.
+function cluster(identifier: string, changes: Partial<DbCluster> = {}): DbCluster {
+  return { ...CLUSTERS.find(({ DBClusterIdentifier }) => DBClusterIdentifier === identifier)!, ...changes };
+}
+
 type AccountContents = {
   regions?: { RegionName: string; RegionOptStatus: string }[];
   instances?: Record<string, DbInstance[]>;
+  clusters?: Record<string, DbCluster[]>;
   majorVersions?: Record<string, unknown>;
   engineVersions?: Record<string, unknown>;
 };
 
-// The recorded account, signed in: its regions, its RDS instances by region,
-// where every enabled region not given has none, and AWS's RDS lifecycles and
-// offered versions by Engine in each region, the recorded ones unless given.
-// A region with no answer fails the Scan.
+// The recorded account, signed in: its regions, its RDS instances and DB
+// clusters by region, where every enabled region not given has none, and
+// AWS's RDS lifecycles and offered versions by Engine in each region, the
+// recorded ones unless given. A region with no answer fails the Scan.
 function account(contents: AccountContents = {}) {
   return fakeAws(accountAnswers(contents));
 }
@@ -296,6 +330,7 @@ function account(contents: AccountContents = {}) {
 function accountAnswers({
   regions = listRegions.Regions,
   instances = { "eu-west-1": describeDbInstances.DBInstances },
+  clusters = {},
   majorVersions = MAJOR_VERSIONS,
   engineVersions = ENGINE_VERSIONS,
 }: AccountContents = {}): Record<string, Answer> {
@@ -303,8 +338,9 @@ function accountAnswers({
     [CALLER_IDENTITY]: SIGNED_IN,
     [LIST_REGIONS]: { stdout: JSON.stringify({ Regions: regions }) },
   };
-  for (const region of [...ENABLED_REGIONS, ...Object.keys(instances)]) {
+  for (const region of [...ENABLED_REGIONS, ...Object.keys(instances), ...Object.keys(clusters)]) {
     answers[describeDbInstancesIn(region)] = { stdout: JSON.stringify({ DBInstances: instances[region] ?? [] }) };
+    answers[describeDbClustersIn(region)] = { stdout: JSON.stringify({ DBClusters: clusters[region] ?? [] }) };
     for (const [engine, answer] of Object.entries(majorVersions)) {
       answers[describeMajorVersionsIn(region, engine)] = { stdout: JSON.stringify(answer) };
     }
@@ -888,6 +924,226 @@ describe("AWS's support dates for RDS", () => {
       },
       datesDisagree: false,
     });
+    expectOnlyJsonReads(aws);
+  });
+});
+
+describe("Aurora and Multi-AZ DB clusters", () => {
+  // The page's Components after a Scan of an account with only `clusters` in
+  // eu-west-1 and the instances in `instances` there; and the fake runner, to
+  // check last.
+  async function scannedClusters(clusters: DbCluster[], instances: DbInstance[] = []) {
+    const aws = account({ instances: { "eu-west-1": instances }, clusters: { "eu-west-1": clusters } });
+    await awol(aws).scan();
+    const model = await awol(aws).pageModel();
+    if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+    return { components: model.lastScan!.components, aws };
+  }
+
+  it("shows an Aurora PostgreSQL cluster as one Component", async () => {
+    const { components, aws } = await scannedClusters([cluster("cluster-1")]);
+
+    expect(components).toEqual([
+      {
+        service: "RDS",
+        product: "Aurora PostgreSQL",
+        region: "eu-west-1",
+        identifier: "cluster-1",
+        version: "15.4",
+        extendedSupport: "Extended Support",
+        releaseCycle: "15",
+        status: "Current",
+        cycleReleaseDate: "2022-11-10",
+        endOfLife: "2028-02-29",
+        extendedSupportEnd: "2031-02-28",
+        sources: {
+          aws: { endOfLife: "2028-02-29", extendedSupportEnd: "2031-02-28" },
+          "endoflife.date": { endOfLife: "2028-02-29", extendedSupportEnd: "2031-02-28" },
+        },
+        datesDisagree: false,
+        drift: {
+          latestPatch: { kind: "behind", version: "15.19" },
+          newestCycle: { kind: "behind", version: "18" },
+          newestOffered: { kind: "behind", version: "18.6" },
+        },
+      },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows an Aurora MySQL cluster as one Component, on the first number of the Aurora version inside its engine version", async () => {
+    const { components, aws } = await scannedClusters([cluster("cluster-2")]);
+
+    expect(components).toEqual([
+      {
+        service: "RDS",
+        product: "Aurora MySQL",
+        region: "eu-west-1",
+        identifier: "cluster-2",
+        version: "8.0.mysql_aurora.3.04.0",
+        extendedSupport: "auto-upgrade at End of life",
+        releaseCycle: "3",
+        status: "Current",
+        cycleReleaseDate: "2021-11-23",
+        endOfLife: "2028-04-30",
+        extendedSupportEnd: "2029-07-31",
+        sources: {
+          aws: { endOfLife: "2028-04-30", extendedSupportEnd: "2029-07-31" },
+          "endoflife.date": { endOfLife: "2028-04-30", extendedSupportEnd: "2029-07-31" },
+        },
+        datesDisagree: false,
+        drift: {
+          latestPatch: { kind: "behind", version: "3.14" },
+          newestCycle: { kind: "behind", version: "8.4" },
+          newestOffered: { kind: "behind", version: "8.4.mysql_aurora.8.4.10" },
+        },
+      },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows a Multi-AZ DB cluster as one Component of its engine's RDS Product", async () => {
+    const { components, aws } = await scannedClusters([cluster("cluster-3")]);
+
+    expect(components).toEqual([
+      {
+        service: "RDS",
+        product: "RDS PostgreSQL",
+        region: "eu-west-1",
+        identifier: "cluster-3",
+        version: "16.13",
+        extendedSupport: "Extended Support",
+        releaseCycle: "16",
+        status: "Current",
+        cycleReleaseDate: "2023-11-17",
+        endOfLife: "2029-02-28",
+        extendedSupportEnd: "2032-02-29",
+        sources: {
+          aws: { endOfLife: "2029-02-28", extendedSupportEnd: "2032-02-29" },
+          "endoflife.date": { endOfLife: "2029-02-28", extendedSupportEnd: "2032-02-29" },
+        },
+        datesDisagree: false,
+        drift: {
+          latestPatch: { kind: "behind", version: "16.15" },
+          newestCycle: { kind: "behind", version: "18" },
+          newestOffered: { kind: "behind", version: "18.6" },
+        },
+      },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows a cluster once, and none of its member instances", async () => {
+    const { components, aws } = await scannedClusters(
+      [cluster("cluster-1"), cluster("cluster-3")],
+      [
+        instance("db-6"),
+        instance("cluster-1-instance-1", { Engine: "aurora-postgresql", EngineVersion: "15.4", DBClusterIdentifier: "cluster-1" }),
+        instance("cluster-1-instance-2", { Engine: "aurora-postgresql", EngineVersion: "15.4", DBClusterIdentifier: "cluster-1" }),
+        instance("cluster-3-instance-1", { EngineVersion: "16.13", DBClusterIdentifier: "cluster-3" }),
+        instance("cluster-3-instance-2", { EngineVersion: "16.13", DBClusterIdentifier: "cluster-3" }),
+      ],
+    );
+
+    expect(components.map(({ identifier }) => identifier)).toEqual(["cluster-1", "cluster-3", "db-6"]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("leaves out DocumentDB and Neptune clusters", async () => {
+    const { components, aws } = await scannedClusters(CLUSTERS);
+
+    expect(components.map(({ identifier, product }) => ({ identifier, product }))).toEqual([
+      { identifier: "cluster-1", product: "Aurora PostgreSQL" },
+      { identifier: "cluster-2", product: "Aurora MySQL" },
+      { identifier: "cluster-3", product: "RDS PostgreSQL" },
+    ]);
+    const engines = aws.calls.filter(([, subcommand]) => subcommand !== "describe-db-instances" && subcommand !== "describe-db-clusters").map((argv) => argv[5]);
+    expect(engines).not.toContain("docdb");
+    expect(engines).not.toContain("neptune");
+    expectOnlyJsonReads(aws);
+  });
+
+  it.each([
+    // Aurora PostgreSQL by major.
+    ["aurora-postgresql", "15.4", "Aurora PostgreSQL", "15", "Current"],
+    ["aurora-postgresql", "16.4-limitless", "Aurora PostgreSQL", "16", "Current"],
+    ["aurora-postgresql", "13.23", "Aurora PostgreSQL", "13", "AWOL"],
+    // Aurora MySQL by the first number of the Aurora version inside the
+    // engine version, and from 8.4 by x.y.
+    ["aurora-mysql", "8.0.mysql_aurora.3.04.0", "Aurora MySQL", "3", "Current"],
+    ["aurora-mysql", "5.7.mysql_aurora.2.12.6", "Aurora MySQL", "2", "AWOL"],
+    ["aurora-mysql", "8.4.mysql_aurora.8.4.7", "Aurora MySQL", "8.4", "Current"],
+    // Multi-AZ DB clusters as RDS.
+    ["postgres", "16.13", "RDS PostgreSQL", "16", "Current"],
+    ["mysql", "8.4.7", "RDS MySQL", "8.4.7", "Current"],
+  ])("matches a %s cluster on %s to %s Release Cycle %s", async (engine, version, product, releaseCycle, status) => {
+    const { components, aws } = await scannedClusters([cluster("cluster-6", { Engine: engine, EngineVersion: version })]);
+
+    expect(components).toMatchObject([{ product, version, releaseCycle, status }]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("decides Status with AWS's End of life over endoflife.date's, marking the row", async () => {
+    // The recorded Aurora PostgreSQL lifecycles, with standard support for 15
+    // ending on 2027-02-28 instead of 2028-02-29.
+    const earlier = structuredClone(auroraPostgresqlMajorVersions);
+    earlier.DBMajorEngineVersions.find(({ MajorEngineVersion }) => MajorEngineVersion === "15")!.SupportedEngineLifecycles[0]!.LifecycleSupportEndDate =
+      "2027-02-28T23:59:59.999000+00:00";
+    const aws = account({
+      instances: {},
+      clusters: { "eu-west-1": [cluster("cluster-1")] },
+      majorVersions: { ...MAJOR_VERSIONS, "aurora-postgresql": earlier },
+    });
+
+    await awol(aws).scan();
+
+    expect(await awol(aws).pageModel()).toMatchObject({
+      lastScan: {
+        components: [
+          {
+            identifier: "cluster-1",
+            status: "Falling behind",
+            endOfLife: "2027-02-28",
+            sources: { aws: { endOfLife: "2027-02-28" }, "endoflife.date": { endOfLife: "2028-02-29" } },
+            datesDisagree: true,
+          },
+        ],
+      },
+    });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("decides Status with endoflife.date's End of life where AWS gives none: Aurora MySQL 8.4", async () => {
+    const { components, aws } = await scannedClusters([cluster("cluster-2", { EngineVersion: "8.4.mysql_aurora.8.4.7" })]);
+
+    expect(components).toMatchObject([
+      {
+        releaseCycle: "8.4",
+        status: "Current",
+        endOfLife: "2032-04-30",
+        sources: { aws: {}, "endoflife.date": { endOfLife: "2032-04-30" } },
+        datesDisagree: false,
+      },
+    ]);
+    expect(components[0]!.sources.aws.endOfLife).toBeUndefined();
+    expectOnlyJsonReads(aws);
+  });
+
+  it.each([
+    // Aurora MySQL 3's Latest patch is 3.14; AWS offers up to 8.4.10.
+    [
+      "8.0.mysql_aurora.3.04.0",
+      { latestPatch: { kind: "behind", version: "3.14" }, newestCycle: { kind: "behind", version: "8.4" }, newestOffered: { kind: "behind", version: "8.4.mysql_aurora.8.4.10" } },
+    ],
+    [
+      "8.4.mysql_aurora.8.4.7",
+      { latestPatch: { kind: "behind", version: "8.4.10" }, newestCycle: { kind: "none" }, newestOffered: { kind: "behind", version: "8.4.mysql_aurora.8.4.10" } },
+    ],
+    ["8.4.mysql_aurora.8.4.10", { latestPatch: { kind: "none" }, newestCycle: { kind: "none" }, newestOffered: { kind: "none" } }],
+  ])("shows Aurora MySQL %s's Drift", async (version, drift) => {
+    const { components, aws } = await scannedClusters([cluster("cluster-2", { EngineVersion: version })]);
+
+    expect(components[0]!.drift).toEqual(drift);
     expectOnlyJsonReads(aws);
   });
 });

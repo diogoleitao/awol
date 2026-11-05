@@ -4,13 +4,14 @@ import { compareVersions } from "./drift.ts";
 // A Product awol reads from RDS: its name, its endoflife.date product, the
 // Release Cycle names a version could match, most specific first, the AWS
 // major version a version is in, and whether AWS offers it Extended Support
-// at all.
+// at all, and a version as endoflife.date numbers Latest patches.
 export type Product = {
   name: string;
   endOfLifeProduct: string;
   cycleNames(version: string): string[];
   awsMajorVersion(version: string): string;
   hasExtendedSupport: boolean;
+  latestPatchVersion(version: string): string;
 };
 
 // The End of life and end of Extended Support one source gives, where it
@@ -55,6 +56,7 @@ const PRODUCTS: Record<string, Product> = {
     cycleNames: (version) => [postgresMajor(version)],
     awsMajorVersion: postgresMajor,
     hasExtendedSupport: true,
+    latestPatchVersion: (version) => version,
   },
   // By exact minor cycle first (`8.0.46-rds.20260624` to `8.0.46`), then
   // `x.y` (`8.0.35` to `8.0`). The AWS major version is `x.y`.
@@ -67,6 +69,7 @@ const PRODUCTS: Record<string, Product> = {
     },
     awsMajorVersion: majorMinor,
     hasExtendedSupport: true,
+    latestPatchVersion: (version) => version,
   },
   // By `x.y` (`10.11.15` to `10.11`), as is the AWS major version. AWS gives
   // MariaDB standard support only, so an instance's Extended Support setting
@@ -77,6 +80,32 @@ const PRODUCTS: Record<string, Product> = {
     cycleNames: (version) => [majorMinor(version)],
     awsMajorVersion: majorMinor,
     hasExtendedSupport: false,
+    latestPatchVersion: (version) => version,
+  },
+  // By major (`15.4` to `15`), as is the AWS major version.
+  "aurora-postgresql": {
+    name: "Aurora PostgreSQL",
+    endOfLifeProduct: "amazon-aurora-postgresql",
+    cycleNames: (version) => [postgresMajor(version)],
+    awsMajorVersion: postgresMajor,
+    hasExtendedSupport: true,
+    latestPatchVersion: (version) => version,
+  },
+  // By the first number of the Aurora version inside the engine version
+  // (`8.0.mysql_aurora.3.04.0` to `3`), except from 8.4, where the Aurora
+  // version is the MySQL version and the cycle is `x.y`
+  // (`8.4.mysql_aurora.8.4.7` to `8.4`). The AWS major version is the MySQL
+  // `x.y` in front, and Latest patches are Aurora versions.
+  "aurora-mysql": {
+    name: "Aurora MySQL",
+    endOfLifeProduct: "amazon-aurora-mysql",
+    cycleNames: (version) => {
+      const [mysql, aurora] = splitAuroraMysql(version);
+      return [aurora.startsWith(`${mysql}.`) ? mysql : aurora.split(".")[0]!];
+    },
+    awsMajorVersion: majorMinor,
+    hasExtendedSupport: true,
+    latestPatchVersion: (version) => splitAuroraMysql(version)[1],
   },
 };
 
@@ -85,47 +114,65 @@ function postgresMajor(version: string): string {
   return Number(major) < 10 ? `${major}.${minor}` : major!;
 }
 
+// The MySQL `x.y` and the Aurora version of an Aurora MySQL engine version:
+// `8.0.mysql_aurora.3.04.0` to `8.0` and `3.04.0`.
+function splitAuroraMysql(version: string): [string, string] {
+  const [mysql = "", aurora = ""] = version.split(".mysql_aurora.");
+  return [mysql, aurora];
+}
+
 function majorMinor(version: string): string {
   return version.split(".").slice(0, 2).join(".");
 }
 
-type DbInstance = {
-  DBInstanceIdentifier: string;
+// What an RDS instance or DB cluster reports.
+type DbComponent = {
+  identifier: string;
   Engine: string;
   EngineVersion: string;
   EngineLifecycleSupport?: string;
-  DBClusterIdentifier?: string;
 };
 
-// The RDS instances in `region` that are Components, each with AWS's support
-// dates for its AWS major version there and the Newest offered version of its
-// Product there. An instance in a DB cluster is not a Component: its cluster
-// is.
-export async function readRdsInstances(aws: AwsRunner, region: string): Promise<ComponentReading[]> {
-  const stdout = await aws(["rds", "describe-db-instances", "--region", region, "--output", "json"]);
-  const instances = (JSON.parse(stdout) as { DBInstances: DbInstance[] }).DBInstances.filter(
-    (instance) => PRODUCTS[instance.Engine] !== undefined && instance.DBClusterIdentifier === undefined,
-  );
+type DbInstance = Omit<DbComponent, "identifier"> & { DBInstanceIdentifier: string; DBClusterIdentifier?: string };
 
+type DbCluster = Omit<DbComponent, "identifier"> & { DBClusterIdentifier: string };
+
+// The RDS instances and DB clusters in `region` that are Components, each
+// with AWS's support dates for its AWS major version there and the Newest
+// offered version of its Product there. An instance in a DB cluster is not a
+// Component: its cluster is.
+export async function readRdsComponents(aws: AwsRunner, region: string): Promise<ComponentReading[]> {
   // One call at a time, so a region makes one call at once.
+  const instancesStdout = await aws(["rds", "describe-db-instances", "--region", region, "--output", "json"]);
+  const clustersStdout = await aws(["rds", "describe-db-clusters", "--region", region, "--output", "json"]);
+  const components: DbComponent[] = [
+    ...(JSON.parse(instancesStdout) as { DBInstances: DbInstance[] }).DBInstances.filter(
+      (instance) => instance.DBClusterIdentifier === undefined,
+    ).map((instance) => ({ ...instance, identifier: instance.DBInstanceIdentifier })),
+    ...(JSON.parse(clustersStdout) as { DBClusters: DbCluster[] }).DBClusters.map((cluster) => ({
+      ...cluster,
+      identifier: cluster.DBClusterIdentifier,
+    })),
+  ].filter((component) => PRODUCTS[component.Engine] !== undefined);
+
   const lifecyclesByEngine = new Map<string, Map<string, SupportDates>>();
   const newestOfferedByEngine = new Map<string, string | undefined>();
-  for (const engine of new Set(instances.map((instance) => instance.Engine))) {
+  for (const engine of new Set(components.map((component) => component.Engine))) {
     lifecyclesByEngine.set(engine, await readAwsLifecycles(aws, region, engine));
     newestOfferedByEngine.set(engine, await readNewestOffered(aws, region, engine));
   }
 
-  return instances.map((instance) => {
-    const product = PRODUCTS[instance.Engine]!;
+  return components.map((component) => {
+    const product = PRODUCTS[component.Engine]!;
     return {
       service: "RDS",
       product,
       region,
-      identifier: instance.DBInstanceIdentifier,
-      version: instance.EngineVersion,
-      extendedSupport: product.hasExtendedSupport ? EXTENDED_SUPPORT[instance.EngineLifecycleSupport ?? ""] : undefined,
-      awsLifecycle: lifecyclesByEngine.get(instance.Engine)!.get(product.awsMajorVersion(instance.EngineVersion)) ?? {},
-      newestOffered: newestOfferedByEngine.get(instance.Engine),
+      identifier: component.identifier,
+      version: component.EngineVersion,
+      extendedSupport: product.hasExtendedSupport ? EXTENDED_SUPPORT[component.EngineLifecycleSupport ?? ""] : undefined,
+      awsLifecycle: lifecyclesByEngine.get(component.Engine)!.get(product.awsMajorVersion(component.EngineVersion)) ?? {},
+      newestOffered: newestOfferedByEngine.get(component.Engine),
     };
   });
 }

@@ -1,0 +1,41 @@
+{
+  "DBMajorEngineVersions": [
+    {
+      "Engine": "aurora-mysql",
+      "MajorEngineVersion": "5.7",
+      "SupportedEngineLifecycles": [
+        {
+          "LifecycleSupportName": "open-source-rds-standard-support",
+          "LifecycleSupportStartDate": "2018-02-06T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2024-10-31T23:59:59.999000+00:00"
+        },
+        {
+          "LifecycleSupportName": "open-source-rds-extended-support",
+          "LifecycleSupportStartDate": "2024-11-01T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2029-06-30T23:59:59.999000+00:00"
+        }
+      ]
+    },
+    {
+      "Engine": "aurora-mysql",
+      "MajorEngineVersion": "8.0",
+      "SupportedEngineLifecycles": [
+        {
+          "LifecycleSupportName": "open-source-rds-standard-support",
+          "LifecycleSupportStartDate": "2021-11-18T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2028-04-30T23:59:59.999000+00:00"
+        },
+        {
+          "LifecycleSupportName": "open-source-rds-extended-support",
+          "LifecycleSupportStartDate": "2028-05-01T00:00:00+00:00",
+          "LifecycleSupportEndDate": "2029-07-31T23:59:59.999000+00:00"
+        }
+      ]
+    },
+    {
+      "Engine": "aurora-mysql",
+      "MajorEngineVersion": "8.4",
+      "SupportedEngineLifecycles": []
+    }
+  ]
+}

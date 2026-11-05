@@ -1,7 +1,7 @@
 import type { AwsRunner } from "../aws/runner.ts";
 import type { ReleaseCycle } from "../endoflife/release-cycles.ts";
 import { type Drift, driftFrom, driftFromCycle, withHighestLatestPatch } from "./drift.ts";
-import { type ExtendedSupport, readRdsInstances, type SupportDates } from "./rds.ts";
+import { type ExtendedSupport, readRdsComponents, type SupportDates } from "./rds.ts";
 
 // How many regions a Scan reads at once.
 const REGION_CONCURRENCY = 8;
@@ -38,7 +38,7 @@ export async function runScan(
   now: Date,
 ): Promise<Scan> {
   const regions = await enabledRegions(aws);
-  const readings = (await mapConcurrently(regions, REGION_CONCURRENCY, (region) => readRdsInstances(aws, region))).flat();
+  const readings = (await mapConcurrently(regions, REGION_CONCURRENCY, (region) => readRdsComponents(aws, region))).flat();
 
   const endOfLifeProducts = [...new Set(readings.map((reading) => reading.product.endOfLifeProduct))];
   const cyclesByProduct = new Map(
@@ -56,7 +56,7 @@ export async function runScan(
       const matched = cycleNames.flatMap((name) => cycles.filter((cycle) => cycle.name === name));
       const releaseCycle = matched[0];
       const drift = {
-        latestPatch: driftFrom(reading.version, withHighestLatestPatch(matched)?.latest),
+        latestPatch: driftFrom(product.latestPatchVersion(reading.version),withHighestLatestPatch(matched)?.latest),
         newestCycle: driftFromCycle(releaseCycle, cycleNames, withHighestLatestPatch(cycles)),
         newestOffered: driftFrom(reading.version, newestOffered),
       };

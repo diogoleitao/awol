@@ -35,14 +35,16 @@ export function driftFromCycle(
   return cycleNames.includes(newestCycle.name) ? { kind: "none" } : { kind: "behind", version: newestCycle.name };
 }
 
-// Orders versions by their dotted numbers, then with a build suffix after the
-// version it builds on: `8.0.46` before `8.0.46-rds.20260624` before
-// `8.0.46-rds.20260908` before `8.4.5`.
+// Orders versions by their dotted numbers, skipping a dotted word such as
+// Aurora MySQL's `mysql_aurora`, then with a build suffix after the version
+// it builds on: `8.0.46` before `8.0.46-rds.20260624` before
+// `8.0.46-rds.20260908` before `8.4.5`, and `8.0.mysql_aurora.3.14.0` before
+// `8.4.mysql_aurora.8.4.7`.
 export function compareVersions(a: string, b: string): number {
   const [aNumbers = "", aSuffix] = splitSuffix(a);
   const [bNumbers = "", bSuffix] = splitSuffix(b);
-  const aParts = aNumbers.split(".").map(Number);
-  const bParts = bNumbers.split(".").map(Number);
+  const aParts = dottedNumbers(aNumbers);
+  const bParts = dottedNumbers(bNumbers);
   for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
     const difference = (aParts[i] ?? 0) - (bParts[i] ?? 0);
     if (difference !== 0) return difference;
@@ -51,6 +53,13 @@ export function compareVersions(a: string, b: string): number {
   if (aSuffix === undefined) return -1;
   if (bSuffix === undefined) return 1;
   return aSuffix < bSuffix ? -1 : 1;
+}
+
+function dottedNumbers(version: string): number[] {
+  return version
+    .split(".")
+    .filter((part) => /^\d+$/.test(part))
+    .map(Number);
 }
 
 function splitSuffix(version: string): [string, string | undefined] {
