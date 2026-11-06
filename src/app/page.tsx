@@ -15,11 +15,8 @@ export default async function DashboardPage() {
 
   if (model.kind === "login-needed") return <LoginNeeded reason={model.reason} />;
 
-  return (
-    <div className="flex flex-col gap-6">
-      {model.lastScan === undefined ? <NoScanYet next={nextStepOf(model)} /> : <ScanResult scan={model.lastScan} />}
-    </div>
-  );
+  if (model.lastScan === undefined) return <NoScanYet next={nextStepOf(model)} />;
+  return <ScanResult scan={model.lastScan} />;
 }
 
 // The dashboard of an account with no Scan yet, pointing to the step before
@@ -55,11 +52,10 @@ function DiscoveryLink({ children }: { children: string }) {
 
 function ScanResult({ scan }: { scan: LastScan }) {
   return (
-    <>
+    <ScanTable scan={scan}>
       {scan.unmonitoredServices.length > 0 && <UnmonitoredServices services={scan.unmonitoredServices} />}
       {scan.failedParts.length > 0 && <FailedParts parts={scan.failedParts} />}
-      <ScanTable scan={scan} />
-    </>
+    </ScanTable>
   );
 }
 

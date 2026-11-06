@@ -10,7 +10,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 export type SidebarSection = { name: string; icon: ReactNode };
 
 // A page with `sidebar` on its left, above it on narrow screens, and
-// `children` beside it. A button below it hides the sidebar, leaving the icon
+// `children` beside it. A button at its bottom hides the sidebar, leaving the icon
 // of each of its `sections`, named on hover, and the button, any of which
 // shows it again; hiding it keeps what is open or ticked in it. It starts shown, and
 // live updates keep it as it is.
@@ -41,11 +41,14 @@ export function SidebarLayout({ sidebar, sections, children }: { sidebar: ReactN
         <div hidden={!open} className="flex flex-col gap-4">
           {sidebar}
         </div>
+        {/* On wide screens the button sits at the bottom of the sidebar, and
+            stays as far from the bottom of the window while the sidebar runs
+            past it, over what it holds. */}
         <Button
           type="button"
           variant="ghost"
           size="icon-sm"
-          className="self-start text-muted-foreground"
+          className="self-start text-muted-foreground lg:sticky lg:bottom-8 lg:mt-auto lg:bg-muted"
           aria-label={open ? "Hide the sidebar" : "Show the sidebar"}
           aria-expanded={open}
           onClick={() => setOpen(!open)}

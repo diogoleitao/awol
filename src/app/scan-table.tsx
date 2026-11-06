@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDown, ArrowUp, History, TriangleAlert } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, Globe, History, Package, Server, TriangleAlert, X } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,7 +21,9 @@ import {
 } from "../awol/dashboard-view.ts";
 import type { ComponentDrift, ComponentRow, Drift, LastScan, SupportDates } from "../awol/page-model.ts";
 import { STATUSES, type Status } from "../awol/status.ts";
+import { CollapsibleCard } from "./collapsible-card.tsx";
 import { formatTime } from "./format.ts";
+import { SidebarLayout, type SidebarSection } from "./sidebar-layout.tsx";
 
 // One of the table's columns: its heading, the column it sorts on, if it
 // sorts, and what its cell shows for a Component.
@@ -63,16 +65,25 @@ const TABLE_COLUMNS: Column[] = [
 
 const COLUMNS = TABLE_COLUMNS.length;
 
-// The last Scan's counts per Status and its Components, filtered, searched,
-// grouped, sorted and paged in the browser, so that none of it reads AWS.
-// Any change but a page goes back to the first page; a live update keeps the
-// page.
-export function ScanTable({ scan }: { scan: LastScan }) {
+// The dashboard's filters, as sections of its sidebar, in alphabetical
+// order.
+const FILTER_SECTIONS = {
+  products: { name: "Product", icon: <Package /> },
+  regions: { name: "Region", icon: <Globe /> },
+  services: { name: "Service", icon: <Server /> },
+  statuses: { name: "Status", icon: <Activity /> },
+} satisfies Record<keyof Filters, SidebarSection>;
+
+// The last Scan's counts per Status and its Components, under `children`,
+// with a sidebar of its filters, filtered, searched, grouped, sorted and
+// paged in the browser, so that none of it reads AWS. Any change but a page
+// goes back to the first page; a live update keeps the page.
+export function ScanTable({ scan, children }: { scan: LastScan; children?: ReactNode }) {
   const [state, setState] = useState<TableState>(INITIAL_TABLE_STATE);
   const { filters, search, grouped, sort, page } = state;
   const options = filterOptionsOf(scan);
   const view = dashboardViewOf(scan, state);
-  const anyNarrowing = search !== "" || Object.values(filters).some((chosen) => chosen.length > 0);
+  const anyChosen = Object.values(filters).some((chosen) => chosen.length > 0);
 
   // A live update that leaves fewer pages moves the table to the last one,
   // so that a later one with more does not move it back.
@@ -102,102 +113,148 @@ export function ScanTable({ scan }: { scan: LastScan }) {
   }
 
   return (
-    <>
-      <div className="flex flex-col gap-2">
-        <FilterRow label="Service" values={options.services} chosen={filters.services} onToggle={(value) => toggle("services", value)} />
-        <FilterRow label="Product" values={options.products} chosen={filters.products} onToggle={(value) => toggle("products", value)} />
-        <FilterRow label="Region" values={options.regions} chosen={filters.regions} onToggle={(value) => toggle("regions", value)} />
-        <FilterRow label="Status" values={options.statuses} chosen={filters.statuses} onToggle={(value) => toggle("statuses", value)} />
-        <div className="flex flex-wrap items-center gap-2">
-          <ToggleButton pressed={grouped} onClick={() => change(() => ({ grouped: !grouped }))}>
-            Group by Product and Release Cycle
-          </ToggleButton>
-          {anyNarrowing && (
-            <Button variant="outline" size="sm" onClick={() => change(() => ({ filters: NO_FILTERS, search: "" }))}>
+    <SidebarLayout
+      sections={Object.values(FILTER_SECTIONS)}
+      sidebar={
+        <>
+          <div className="flex flex-col gap-1">
+            <h2 className="font-medium">Filters</h2>
+            <p className="text-xs text-muted-foreground">
+              Show only the Components that match every filter. A filter with nothing chosen lets every Component through.
+            </p>
+            {/* Always there, so that the cards under it never move. */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-2 self-start"
+              disabled={!anyChosen}
+              onClick={() => change(() => ({ filters: NO_FILTERS }))}
+            >
+              <X />
               Clear filters
             </Button>
-          )}
+          </div>
+          <FilterCard
+            section={FILTER_SECTIONS.products}
+            values={options.products}
+            chosen={filters.products}
+            count={view.chosenCounts.products}
+            onToggle={(value) => toggle("products", value)}
+          />
+          <FilterCard
+            section={FILTER_SECTIONS.regions}
+            values={options.regions}
+            chosen={filters.regions}
+            count={view.chosenCounts.regions}
+            onToggle={(value) => toggle("regions", value)}
+          />
+          <FilterCard
+            section={FILTER_SECTIONS.services}
+            values={options.services}
+            chosen={filters.services}
+            count={view.chosenCounts.services}
+            onToggle={(value) => toggle("services", value)}
+          />
+          <FilterCard
+            section={FILTER_SECTIONS.statuses}
+            values={options.statuses}
+            chosen={filters.statuses}
+            count={view.chosenCounts.statuses}
+            onToggle={(value) => toggle("statuses", value)}
+          />
+        </>
+      }
+    >
+      <div className="flex min-w-0 flex-col gap-6">
+        {children}
+        <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {STATUSES.map((status) => (
+            <li key={status} className={cn("flex items-center gap-3 rounded-lg border-2 bg-zinc-950 px-6 py-4", STATUS_TILE_CLASSES[status])}>
+              <span className="text-4xl font-semibold tabular-nums">{view.counts[status]}</span>
+              <span className="text-base font-medium">{status}</span>
+            </li>
+          ))}
+        </ul>
+        <h2 className="font-medium">Components</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2">
+            <span className="w-16 text-sm text-muted-foreground">Search</span>
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => change(() => ({ search: event.target.value }))}
+              className="h-8 w-80 rounded-md border bg-transparent px-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            />
+          </label>
+          <div className="ml-auto">
+            <ToggleButton pressed={grouped} onClick={() => change(() => ({ grouped: !grouped }))}>
+              Group by Product and Release Cycle
+            </ToggleButton>
+          </div>
         </div>
-      </div>
-      <ul className="flex flex-wrap gap-3">
-        {STATUSES.map((status) => (
-          <li key={status} className="flex items-center gap-2 rounded-lg border px-4 py-2">
-            <span className="text-2xl font-semibold tabular-nums">{view.counts[status]}</span>
-            <StatusBadge status={status} />
-          </li>
-        ))}
-      </ul>
-      <label className="flex items-center gap-2">
-        <span className="w-16 text-sm text-muted-foreground">Search</span>
-        <input
-          type="search"
-          value={search}
-          onChange={(event) => change(() => ({ search: event.target.value }))}
-          className="h-8 w-80 rounded-md border bg-transparent px-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
-        />
-      </label>
-      {/* Room under the last row for the footer, which stays at the bottom of
-          the window. */}
-      <div className="pb-16">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              {TABLE_COLUMNS.map(({ heading, sortsOn }) =>
-                sortsOn === undefined ? (
-                  <TableHead key={heading}>{heading}</TableHead>
-                ) : (
-                  <SortableHead
-                    key={heading}
-                    heading={heading}
-                    direction={sort?.column === sortsOn ? sort.direction : undefined}
-                    onClick={() => change(({ sort }) => ({ sort: nextSort(sort, sortsOn) }))}
-                  />
-                ),
-              )}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            <SizingRow components={scan.components} />
-            {view.groups.every((group) => group.components.length === 0) && (
+        <div>
+          <Table>
+            <TableHeader>
               <TableRow>
-                <TableCell colSpan={COLUMNS} className="text-muted-foreground">
-                  No Component passes the filters.
-                </TableCell>
+                {TABLE_COLUMNS.map(({ heading, sortsOn }) =>
+                  sortsOn === undefined ? (
+                    <TableHead key={heading}>{heading}</TableHead>
+                  ) : (
+                    <SortableHead
+                      key={heading}
+                      heading={heading}
+                      direction={sort?.column === sortsOn ? sort.direction : undefined}
+                      onClick={() => change(({ sort }) => ({ sort: nextSort(sort, sortsOn) }))}
+                    />
+                  ),
+                )}
               </TableRow>
-            )}
-            {view.groups.map((group) => (
-              <Group key={group.key} group={group} grouped={grouped} />
-            ))}
-          </TableBody>
-        </Table>
-        <div className="fixed inset-x-0 bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background px-8 py-3 text-sm">
-          {view.pages > 1 && (
-            <>
-              <Button variant="outline" size="sm" disabled={view.page === 0} onClick={() => goTo(view.page - 1)}>
-                Previous
-              </Button>
-              <Button variant="outline" size="sm" disabled={view.page === view.pages - 1} onClick={() => goTo(view.page + 1)}>
-                Next
-              </Button>
-            </>
-          )}
-          {view.range.of > PAGE_SIZES[0] && (
-            <>
-              <span className="tabular-nums">
-                {view.range.from}-{view.range.to} of {view.range.of} Components
-              </span>
-              <span className="text-muted-foreground">Per page</span>
-              {PAGE_SIZES.map((size) => (
-                <ToggleButton key={size} pressed={page.size === size} onClick={() => change(() => ({ page: { ...page, size } }))}>
-                  {size}
-                </ToggleButton>
+            </TableHeader>
+            <TableBody>
+              <SizingRow components={scan.components} />
+              {view.groups.every((group) => group.components.length === 0) && (
+                <TableRow>
+                  <TableCell colSpan={COLUMNS} className="text-muted-foreground">
+                    No Component passes the filters.
+                  </TableCell>
+                </TableRow>
+              )}
+              {view.groups.map((group) => (
+                <Group key={group.key} group={group} grouped={grouped} />
               ))}
-            </>
-          )}
-          {sort === undefined && <span className="text-muted-foreground">Sorted by Urgency order</span>}
+            </TableBody>
+          </Table>
+          {/* At the bottom of the window, under the table only, while the
+              table runs past it. */}
+          <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background py-3 text-sm">
+            {view.pages > 1 && (
+              <>
+                <Button variant="outline" size="sm" disabled={view.page === 0} onClick={() => goTo(view.page - 1)}>
+                  Previous
+                </Button>
+                <Button variant="outline" size="sm" disabled={view.page === view.pages - 1} onClick={() => goTo(view.page + 1)}>
+                  Next
+                </Button>
+              </>
+            )}
+            {view.range.of > PAGE_SIZES[0] && (
+              <>
+                <span className="tabular-nums">
+                  {view.range.from}-{view.range.to} of {view.range.of} Components
+                </span>
+                <span className="text-muted-foreground">Per page</span>
+                {PAGE_SIZES.map((size) => (
+                  <ToggleButton key={size} pressed={page.size === size} onClick={() => change(() => ({ page: { ...page, size } }))}>
+                    {size}
+                  </ToggleButton>
+                ))}
+              </>
+            )}
+            {sort === undefined && <span className="text-muted-foreground">Sorted by Urgency order</span>}
+          </div>
         </div>
       </div>
-    </>
+    </SidebarLayout>
   );
 }
 
@@ -223,34 +280,58 @@ function SortableHead({
   );
 }
 
-// The values a filter offers, each chosen or not.
-function FilterRow<T extends string>({
-  label,
+// A filter's card, open at first: the values it offers, one per line and as
+// wide as the card, each chosen or not,
+// under its `section`'s name and icon and `count`, how many chosen values it
+// offers, when any.
+function FilterCard<T extends string>({
+  section,
   values,
   chosen,
+  count,
   onToggle,
 }: {
-  label: string;
+  section: SidebarSection;
   values: T[];
   chosen: T[];
+  count: number;
   onToggle: (value: T) => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <span className="w-16 text-sm text-muted-foreground">{label}</span>
-      {values.map((value) => (
-        <ToggleButton key={value} pressed={chosen.includes(value)} onClick={() => onToggle(value)}>
-          {value}
-        </ToggleButton>
-      ))}
-    </div>
+    <CollapsibleCard
+      icon={section.icon}
+      title={
+        <>
+          {section.name} {count > 0 && <span className="tabular-nums font-normal text-muted-foreground">({count})</span>}
+        </>
+      }
+      defaultOpen
+    >
+      <div className="flex flex-col gap-2">
+        {values.map((value) => (
+          <ToggleButton key={value} pressed={chosen.includes(value)} className="justify-start" onClick={() => onToggle(value)}>
+            {value}
+          </ToggleButton>
+        ))}
+      </div>
+    </CollapsibleCard>
   );
 }
 
 // A button that stays pressed while its value is chosen.
-function ToggleButton({ pressed, onClick, children }: { pressed: boolean; onClick: () => void; children: ReactNode }) {
+function ToggleButton({
+  pressed,
+  className,
+  onClick,
+  children,
+}: {
+  pressed: boolean;
+  className?: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
   return (
-    <Button variant={pressed ? "default" : "outline"} size="sm" aria-pressed={pressed} onClick={onClick}>
+    <Button variant={pressed ? "default" : "outline"} size="sm" aria-pressed={pressed} className={className} onClick={onClick}>
       {children}
     </Button>
   );
@@ -396,6 +477,18 @@ const STATUS_CLASSES: Record<Status, string> = {
   "Falling behind": "border-transparent bg-amber-500 text-black",
   Current: "border-transparent bg-emerald-600 text-white",
   Untracked: "text-muted-foreground",
+};
+
+// Each Status count's tile as a neon sign on a dark tile, its border and
+// text lit and glowing in its Status's color, or unlit, dim grey, for
+// Untracked, the same in light and dark mode.
+const STATUS_TILE_CLASSES: Record<Status, string> = {
+  AWOL: "border-red-500 text-red-400 shadow-[0_0_8px_#ef4444,0_0_24px_#ef444480,inset_0_0_12px_#ef444466] [text-shadow:0_0_6px_#ef4444,0_0_18px_#ef4444]",
+  "Falling behind":
+    "border-amber-400 text-amber-300 shadow-[0_0_8px_#fbbf24,0_0_24px_#fbbf2480,inset_0_0_12px_#fbbf2466] [text-shadow:0_0_6px_#fbbf24,0_0_18px_#fbbf24]",
+  Current:
+    "border-emerald-400 text-emerald-300 shadow-[0_0_8px_#34d399,0_0_24px_#34d39980,inset_0_0_12px_#34d39966] [text-shadow:0_0_6px_#34d399,0_0_18px_#34d399]",
+  Untracked: "border-zinc-700 text-zinc-500",
 };
 
 function StatusBadge({ status }: { status: Status }) {

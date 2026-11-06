@@ -25,7 +25,7 @@ export function MonitoredServicesForm({ services, monitored }: { services: Disco
       icon={<Eye />}
       title={
         <>
-          Services <span className="tabular-nums font-normal text-muted-foreground">({monitored?.length ?? 0})</span>
+          Monitoring <span className="tabular-nums font-normal text-muted-foreground">({monitored?.length ?? 0})</span>
         </>
       }
       description={monitored === undefined ? "The services awol monitors. None chosen yet." : "The services awol monitors. Scans read only these."}

@@ -23,7 +23,7 @@ export default async function DiscoveryPage() {
     <SidebarLayout
       sections={[
         { name: "Regions", icon: <Globe /> },
-        { name: "Services", icon: <Eye /> },
+        { name: "Monitoring", icon: <Eye /> },
       ]}
       sidebar={
         <>

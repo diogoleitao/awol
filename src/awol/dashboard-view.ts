@@ -69,11 +69,13 @@ export type TableState = { filters: Filters; search: string; grouped: boolean; s
 
 export const INITIAL_TABLE_STATE: TableState = { filters: NO_FILTERS, search: "", grouped: false, page: { index: 0, size: 25 } };
 
-// The last Scan as the dashboard's table shows it: how many of the
-// Components that pass the filters and search have each Status, its rows on
-// the page shown, that page's index out of how many pages, and which of the
-// Components that pass the filters and search it shows, counted from 1.
+// The last Scan as the dashboard's table shows it: how many values are
+// chosen in each filter, how many of the Components that pass the filters
+// and search have each Status, its rows on the page shown, that page's index
+// out of how many pages, and which of the Components that pass the filters
+// and search it shows, counted from 1.
 export type DashboardView = {
+  chosenCounts: Record<keyof Filters, number>;
   counts: Record<Status, number>;
   groups: ComponentGroup[];
   page: number;
@@ -109,6 +111,12 @@ export function dashboardViewOf(scan: LastScan, { filters, search, grouped, sort
   const to = Math.min(from + page.size, components.length);
   const groups = grouped ? byReleaseCycle(components) : [{ key: "all", count: components.length, components }];
   return {
+    chosenCounts: {
+      services: choiceOf(filters.services, offered.services).length,
+      products: choiceOf(filters.products, offered.products).length,
+      regions: choiceOf(filters.regions, offered.regions).length,
+      statuses: choiceOf(filters.statuses, offered.statuses).length,
+    },
     counts: countsOf(components),
     groups: onPage(groups, from, to),
     page: index,
@@ -170,8 +178,13 @@ function alphabetically(a: string, b: string): number {
 // Whether `value` passes a column's filter of `chosen` values, among those
 // `offered`.
 function passes<T>(chosen: T[], offered: T[], value: T): boolean {
-  const choice = chosen.filter((other) => offered.includes(other));
+  const choice = choiceOf(chosen, offered);
   return choice.length === 0 || choice.includes(value);
+}
+
+// The `chosen` values of a column's filter that are among those `offered`.
+function choiceOf<T>(chosen: T[], offered: T[]): T[] {
+  return chosen.filter((value) => offered.includes(value));
 }
 
 // Whether every word of `search` is in `component`'s identifier, version or

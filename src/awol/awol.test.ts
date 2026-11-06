@@ -2491,6 +2491,18 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
     expectOnlyJsonReads(aws);
   });
 
+  it("counts the values chosen in each filter that a Component of the last Scan has", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const view = dashboardViewOf(lastScan, {
+      ...INITIAL_TABLE_STATE,
+      filters: { ...NO_FILTERS, products: ["AWS Lambda", "RDS MariaDB"], regions: ["eu-west-1", "us-east-1"], statuses: ["AWOL"] },
+    });
+
+    expect(view.chosenCounts).toEqual({ services: 0, products: 1, regions: 2, statuses: 1 });
+    expectOnlyJsonReads(aws);
+  });
+
   it("shows only the Components whose identifier has the search in it, whatever its case, in Urgency order", async () => {
     const { lastScan, aws } = await scannedAccount();
 
