@@ -2489,6 +2489,85 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
     expectOnlyJsonReads(aws);
   });
 
+  it("shows only the Components whose identifier has the search in it, whatever its case, in Urgency order", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, search: "FUNCTION" });
+
+    expect(groupsOf(view)).toEqual([{ identifiers: ["function-9:$LATEST", "function-6:$LATEST", "function-1:$LATEST"] }]);
+    expect(view.counts).toEqual({ AWOL: 1, "Falling behind": 0, Current: 1, Untracked: 1 });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows only the Components whose version has the search in it", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, search: "rds.2026" });
+
+    expect(groupsOf(view)).toEqual([{ identifiers: ["db-1"] }]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows only the Components that have every word of the search in them, each in any of their identifier, version or Release Cycle", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const everyWordFound = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, search: "  14 DB  " });
+    const wordsInDifferentComponents = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, search: "db python3" });
+    const oneWordNowhere = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, search: "db zzz" });
+
+    expect(groupsOf(everyWordFound)).toEqual([{ identifiers: ["db-2", "db-3"] }]);
+    expect(groupsOf(wordsInDifferentComponents)).toEqual([]);
+    expect(groupsOf(oneWordNowhere)).toEqual([]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("matches an Untracked Component with no version on its identifier only", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, search: "python" });
+
+    expect(groupsOf(view)).toEqual([{ identifiers: ["function-9:$LATEST", "function-6:$LATEST"] }]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows every Component for a search of only whitespace", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, search: "   " });
+
+    expect(view.range).toEqual({ from: 1, to: 9, of: 9 });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows only the Components that pass both the search and the filters, grouped, and counts only those", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const view = dashboardViewOf(lastScan, {
+      ...INITIAL_TABLE_STATE,
+      filters: { ...NO_FILTERS, statuses: ["Falling behind", "Current"] },
+      search: "db",
+      grouped: true,
+    });
+
+    expect(groupsOf(view)).toEqual([
+      { product: "RDS PostgreSQL", releaseCycle: "14", identifiers: ["db-2", "db-3"] },
+      { product: "RDS PostgreSQL", releaseCycle: "16", identifiers: ["db-4"] },
+      { product: "RDS PostgreSQL", releaseCycle: "17", identifiers: ["db-5"] },
+    ]);
+    expect(view.counts).toEqual({ AWOL: 0, "Falling behind": 2, Current: 2, Untracked: 0 });
+    expect(view.range).toEqual({ from: 1, to: 4, of: 4 });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("sorts the Components that have the search in them on the chosen column", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, search: "function", sort: { column: "version", direction: "descending" } });
+
+    expect(groupsOf(view)).toEqual([{ identifiers: ["function-6:$LATEST", "function-9:$LATEST", "function-1:$LATEST"] }]);
+    expectOnlyJsonReads(aws);
+  });
+
   it("groups the Components by Product and Release Cycle, each group where its most urgent Component is, keeping their order inside it", async () => {
     const { lastScan, aws } = await scannedAccount();
 

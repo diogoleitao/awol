@@ -25,8 +25,8 @@ export function filterOptionsOf(scan: LastScan): Filters {
 
 // A run of the dashboard's rows, under `key`: the Components on the page
 // shown of one Product and Release Cycle, with no Release Cycle for its
-// Untracked ones, or, ungrouped, of every Component that passes the filters,
-// and how many Components it has on every page.
+// Untracked ones, or, ungrouped, of every Component that passes the filters
+// and search, and how many Components it has on every page.
 export type ComponentGroup = { key: string; product?: string; releaseCycle?: string; count: number; components: ComponentRow[] };
 
 // The columns the dashboard's table sorts on: every column but Drift.
@@ -63,16 +63,16 @@ export type PageSize = (typeof PAGE_SIZES)[number];
 // A page of the dashboard's table: its index, from 0, and its size.
 export type Page = { index: number; size: PageSize };
 
-// What the dashboard's table is set to show: its filters, whether it groups,
-// its sort, and its page.
-export type TableState = { filters: Filters; grouped: boolean; sort?: Sort; page: Page };
+// What the dashboard's table is set to show: its filters, its search,
+// whether it groups, its sort, and its page.
+export type TableState = { filters: Filters; search: string; grouped: boolean; sort?: Sort; page: Page };
 
-export const INITIAL_TABLE_STATE: TableState = { filters: NO_FILTERS, grouped: false, page: { index: 0, size: 25 } };
+export const INITIAL_TABLE_STATE: TableState = { filters: NO_FILTERS, search: "", grouped: false, page: { index: 0, size: 25 } };
 
 // The last Scan as the dashboard's table shows it: how many of the
-// Components that pass the filters have each Status, its rows on the page
-// shown, that page's index out of how many pages, and which of the
-// Components that pass the filters it shows, counted from 1.
+// Components that pass the filters and search have each Status, its rows on
+// the page shown, that page's index out of how many pages, and which of the
+// Components that pass the filters and search it shows, counted from 1.
 export type DashboardView = {
   counts: Record<Status, number>;
   groups: ComponentGroup[];
@@ -81,9 +81,9 @@ export type DashboardView = {
   range: { from: number; to: number; of: number };
 };
 
-// The Components of `scan` that pass `state`'s filters, on `state`'s page. A
-// chosen value `scan` does not offer, as one kept from before a Scan that no
-// longer finds it, is no choice.
+// The Components of `scan` that pass `state`'s filters and search, on
+// `state`'s page. A chosen value `scan` does not offer, as one kept from
+// before a Scan that no longer finds it, is no choice.
 //
 // They come in Urgency order, the last Scan's, or sorted on `state`'s
 // column, with ties in Urgency order. Grouped, they are grouped by Product
@@ -92,14 +92,15 @@ export type DashboardView = {
 // past the last shows the last.
 //
 // It reads nothing but `scan`.
-export function dashboardViewOf(scan: LastScan, { filters, grouped, sort, page }: TableState): DashboardView {
+export function dashboardViewOf(scan: LastScan, { filters, search, grouped, sort, page }: TableState): DashboardView {
   const offered = filterOptionsOf(scan);
   const components = scan.components.filter(
     (component) =>
       passes(filters.services, offered.services, component.service) &&
       passes(filters.products, offered.products, component.product) &&
       passes(filters.regions, offered.regions, component.region) &&
-      passes(filters.statuses, offered.statuses, component.status),
+      passes(filters.statuses, offered.statuses, component.status) &&
+      matches(search, component),
   );
   if (sort !== undefined) components.sort(compareOn(sort));
   const pages = Math.max(1, Math.ceil(components.length / page.size));
@@ -171,6 +172,17 @@ function alphabetically(a: string, b: string): number {
 function passes<T>(chosen: T[], offered: T[], value: T): boolean {
   const choice = chosen.filter((other) => offered.includes(other));
   return choice.length === 0 || choice.includes(value);
+}
+
+// Whether every word of `search` is in `component`'s identifier, version or
+// Release Cycle, whatever its case. A search of no words is no search.
+function matches(search: string, { identifier, version, releaseCycle }: ComponentRow): boolean {
+  const texts = [identifier, version, releaseCycle].flatMap((text) => (text === undefined ? [] : [text.toLowerCase()]));
+  return search
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((word) => word !== "")
+    .every((word) => texts.some((text) => text.includes(word)));
 }
 
 // `components` grouped by Product and Release Cycle, in the order each

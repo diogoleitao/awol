@@ -63,15 +63,16 @@ const TABLE_COLUMNS: Column[] = [
 
 const COLUMNS = TABLE_COLUMNS.length;
 
-// The last Scan's counts per Status and its Components, filtered, grouped,
-// sorted and paged in the browser, so that none of it reads AWS. Any change
-// but a page goes back to the first page; a live update keeps the page.
+// The last Scan's counts per Status and its Components, filtered, searched,
+// grouped, sorted and paged in the browser, so that none of it reads AWS.
+// Any change but a page goes back to the first page; a live update keeps the
+// page.
 export function ScanTable({ scan }: { scan: LastScan }) {
   const [state, setState] = useState<TableState>(INITIAL_TABLE_STATE);
-  const { filters, grouped, sort, page } = state;
+  const { filters, search, grouped, sort, page } = state;
   const options = filterOptionsOf(scan);
   const view = dashboardViewOf(scan, state);
-  const anyChosen = Object.values(filters).some((chosen) => chosen.length > 0);
+  const anyNarrowing = search !== "" || Object.values(filters).some((chosen) => chosen.length > 0);
 
   // A live update that leaves fewer pages moves the table to the last one,
   // so that a later one with more does not move it back.
@@ -111,8 +112,8 @@ export function ScanTable({ scan }: { scan: LastScan }) {
           <ToggleButton pressed={grouped} onClick={() => change(() => ({ grouped: !grouped }))}>
             Group by Product and Release Cycle
           </ToggleButton>
-          {anyChosen && (
-            <Button variant="outline" size="sm" onClick={() => change(() => ({ filters: NO_FILTERS }))}>
+          {anyNarrowing && (
+            <Button variant="outline" size="sm" onClick={() => change(() => ({ filters: NO_FILTERS, search: "" }))}>
               Clear filters
             </Button>
           )}
@@ -126,6 +127,15 @@ export function ScanTable({ scan }: { scan: LastScan }) {
           </li>
         ))}
       </ul>
+      <label className="flex items-center gap-2">
+        <span className="w-16 text-sm text-muted-foreground">Search</span>
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => change(() => ({ search: event.target.value }))}
+          className="h-8 w-80 rounded-md border bg-transparent px-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        />
+      </label>
       {/* Room under the last row for the footer, which stays at the bottom of
           the window. */}
       <div className="pb-16">
