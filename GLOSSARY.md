@@ -70,6 +70,10 @@ _Avoid_: Unsupported, expired, dead
 The Status of a Component that cannot be matched to a Release Cycle, such as one that reports no version or runs a Product with no known lifecycle.
 _Avoid_: Unknown, unmatched, N/A
 
+**Urgency order**:
+Components ordered by Status (AWOL, Falling behind, Current, Untracked) and then by soonest End of life, with no End of life last.
+_Avoid_: Default order, priority, most urgent first
+
 ### Drift
 
 **Latest patch**:

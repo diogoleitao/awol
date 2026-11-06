@@ -7,7 +7,7 @@ import { type AwsRunner, awsCliError } from "../aws/runner.ts";
 import type { EndOfLifeFetcher } from "../endoflife/fetcher.ts";
 import { openAwol } from "./awol.ts";
 import { SUPPORTED_SERVICES } from "./component.ts";
-import { type DashboardView, dashboardViewOf, filterOptionsOf, NO_FILTERS } from "./dashboard-view.ts";
+import { type DashboardView, dashboardViewOf, filterOptionsOf, INITIAL_TABLE_STATE, NO_FILTERS, nextSort } from "./dashboard-view.ts";
 import type { DiscoveryResult } from "./page-model.ts";
 // Recorded from `aws sts get-caller-identity --output json` against a real
 // account, then stripped of the account ID, user ID and user name.
@@ -2378,7 +2378,7 @@ describe("Lambda functions", () => {
   });
 });
 
-describe("the dashboard's filters and grouping", () => {
+describe("the dashboard's filters, grouping, sorting and pages", () => {
   // The page's last Scan of an account with the recorded RDS instances, a
   // function on python3.8 and one on python3.12 in eu-west-1, and an instance
   // on PostgreSQL 13 and a container-image function in us-east-1, most urgent
@@ -2393,15 +2393,20 @@ describe("the dashboard's filters and grouping", () => {
   //   Current         db-5                RDS PostgreSQL 17      eu-west-1
   //   Untracked       function-1:$LATEST  AWS Lambda             us-east-1
   //
-  // and the fake runner, to check last.
-  async function scannedAccount() {
+  // with `more` functions on python3.12 in eu-west-1 after function-6, and
+  // the fake runner, to check last.
+  async function scannedAccount(more = 0) {
     const aws = account({
       instances: {
         "eu-west-1": describeDbInstances.DBInstances,
         "us-east-1": [instance("db-6", { EngineVersion: "13.22" })],
       },
       functions: {
-        "eu-west-1": [{ latest: lambdaFunction("function-9") }, { latest: lambdaFunction("function-6") }],
+        "eu-west-1": [
+          { latest: lambdaFunction("function-9") },
+          { latest: lambdaFunction("function-6") },
+          ...Array.from({ length: more }, (_, i) => ({ latest: lambdaFunction("function-6", { FunctionName: `function-${11 + i}` }) })),
+        ],
         "us-east-1": [{ latest: lambdaFunction("function-1") }],
       },
     });
@@ -2424,7 +2429,7 @@ describe("the dashboard's filters and grouping", () => {
   it("shows only the Components with the chosen Statuses, and counts only those", async () => {
     const { lastScan, aws } = await scannedAccount();
 
-    const view = dashboardViewOf(lastScan, { ...NO_FILTERS, statuses: ["AWOL", "Untracked"] }, false);
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, filters: { ...NO_FILTERS, statuses: ["AWOL", "Untracked"] } });
 
     expect(groupsOf(view)).toEqual([
       { identifiers: ["function-9:$LATEST", "db-6", "db-1", "function-1:$LATEST"] },
@@ -2436,17 +2441,18 @@ describe("the dashboard's filters and grouping", () => {
   it("shows only the Components that pass every filter, any of the values chosen in each", async () => {
     const { lastScan, aws } = await scannedAccount();
 
-    const byProductAndRegion = dashboardViewOf(
-      lastScan,
-      { ...NO_FILTERS, products: ["AWS Lambda", "RDS MySQL"], regions: ["eu-west-1"] },
-      false,
-    );
-    const byServiceAndRegion = dashboardViewOf(lastScan, { ...NO_FILTERS, services: ["RDS"], regions: ["us-east-1"] }, false);
-    const byEverything = dashboardViewOf(
-      lastScan,
-      { services: ["Lambda"], products: ["AWS Lambda"], regions: ["eu-west-1", "us-east-1"], statuses: ["Current", "Untracked"] },
-      false,
-    );
+    const byProductAndRegion = dashboardViewOf(lastScan, {
+      ...INITIAL_TABLE_STATE,
+      filters: { ...NO_FILTERS, products: ["AWS Lambda", "RDS MySQL"], regions: ["eu-west-1"] },
+    });
+    const byServiceAndRegion = dashboardViewOf(lastScan, {
+      ...INITIAL_TABLE_STATE,
+      filters: { ...NO_FILTERS, services: ["RDS"], regions: ["us-east-1"] },
+    });
+    const byEverything = dashboardViewOf(lastScan, {
+      ...INITIAL_TABLE_STATE,
+      filters: { services: ["Lambda"], products: ["AWS Lambda"], regions: ["eu-west-1", "us-east-1"], statuses: ["Current", "Untracked"] },
+    });
 
     expect(groupsOf(byProductAndRegion)).toEqual([{ identifiers: ["function-9:$LATEST", "db-1", "function-6:$LATEST"] }]);
     expect(byProductAndRegion.counts).toEqual({ AWOL: 2, "Falling behind": 0, Current: 1, Untracked: 0 });
@@ -2458,11 +2464,10 @@ describe("the dashboard's filters and grouping", () => {
   it("ignores a chosen service, Product or region that no Component of the last Scan has, as after a Scan that no longer finds it", async () => {
     const { lastScan, aws } = await scannedAccount();
 
-    const view = dashboardViewOf(
-      lastScan,
-      { ...NO_FILTERS, services: ["ElastiCache"], products: ["RDS MariaDB"], regions: ["ap-south-1"] },
-      false,
-    );
+    const view = dashboardViewOf(lastScan, {
+      ...INITIAL_TABLE_STATE,
+      filters: { ...NO_FILTERS, services: ["ElastiCache"], products: ["RDS MariaDB"], regions: ["ap-south-1"] },
+    });
 
     expect(groupsOf(view)).toEqual([
       {
@@ -2486,7 +2491,7 @@ describe("the dashboard's filters and grouping", () => {
   it("groups the Components by Product and Release Cycle, each group where its most urgent Component is, keeping their order inside it", async () => {
     const { lastScan, aws } = await scannedAccount();
 
-    const view = dashboardViewOf(lastScan, NO_FILTERS, true);
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, grouped: true });
 
     expect(groupsOf(view)).toEqual([
       { product: "AWS Lambda", releaseCycle: "python3.8", identifiers: ["function-9:$LATEST"] },
@@ -2499,6 +2504,206 @@ describe("the dashboard's filters and grouping", () => {
       { product: "AWS Lambda", releaseCycle: undefined, identifiers: ["function-1:$LATEST"] },
     ]);
     expect(view.counts).toEqual({ AWOL: 3, "Falling behind": 2, Current: 3, Untracked: 1 });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("sorts by version number, with no version last", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, sort: { column: "version", direction: "ascending" } });
+
+    expect(groupsOf(view)).toEqual([
+      {
+        identifiers: [
+          "db-1",
+          "db-6",
+          "db-2",
+          "db-3",
+          "db-4",
+          "db-5",
+          "function-9:$LATEST",
+          "function-6:$LATEST",
+          "function-1:$LATEST",
+        ],
+      },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("sorts by date, latest first, with no date still last and Components on the same date in Urgency order", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, sort: { column: "endOfLife", direction: "descending" } });
+
+    expect(groupsOf(view)).toEqual([
+      {
+        identifiers: [
+          "db-5",
+          "db-4",
+          "function-6:$LATEST",
+          "db-2",
+          "db-3",
+          "db-1",
+          "db-6",
+          "function-9:$LATEST",
+          "function-1:$LATEST",
+        ],
+      },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("sorts by text alphabetically, keeping Urgency order within each value", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, sort: { column: "region", direction: "ascending" } });
+
+    expect(groupsOf(view)).toEqual([
+      {
+        identifiers: [
+          "function-9:$LATEST",
+          "db-1",
+          "db-2",
+          "db-3",
+          "function-6:$LATEST",
+          "db-4",
+          "db-5",
+          "db-6",
+          "function-1:$LATEST",
+        ],
+      },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("sorts by Release Cycle number, with no Release Cycle last", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, sort: { column: "releaseCycle", direction: "ascending" } });
+
+    expect(groupsOf(view)).toEqual([
+      {
+        identifiers: [
+          "db-1",
+          "db-6",
+          "db-2",
+          "db-3",
+          "db-4",
+          "db-5",
+          "function-9:$LATEST",
+          "function-6:$LATEST",
+          "function-1:$LATEST",
+        ],
+      },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("sorts by Status in Status order, or in reverse, keeping Urgency order within each Status", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const ascending = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, sort: { column: "status", direction: "ascending" } });
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, sort: { column: "status", direction: "descending" } });
+
+    expect(groupsOf(ascending)).toEqual(groupsOf(dashboardViewOf(lastScan, INITIAL_TABLE_STATE)));
+    expect(groupsOf(view)).toEqual([
+      {
+        identifiers: [
+          "function-1:$LATEST",
+          "function-6:$LATEST",
+          "db-4",
+          "db-5",
+          "db-2",
+          "db-3",
+          "function-9:$LATEST",
+          "db-6",
+          "db-1",
+        ],
+      },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("sorts on a column ascending, then descending, then in Urgency order again, and on another column ascending", () => {
+    const ascending = nextSort(undefined, "endOfLife");
+    const descending = nextSort(ascending, "endOfLife");
+
+    expect(ascending).toEqual({ column: "endOfLife", direction: "ascending" });
+    expect(descending).toEqual({ column: "endOfLife", direction: "descending" });
+    expect(nextSort(descending, "endOfLife")).toBeUndefined();
+    expect(nextSort(descending, "region")).toEqual({ column: "region", direction: "ascending" });
+  });
+
+  it("sorts the Components inside each group, each group where its first Component is", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, grouped: true, sort: { column: "version", direction: "descending" } });
+
+    expect(groupsOf(view)).toEqual([
+      { product: "AWS Lambda", releaseCycle: "python3.12", identifiers: ["function-6:$LATEST"] },
+      { product: "AWS Lambda", releaseCycle: "python3.8", identifiers: ["function-9:$LATEST"] },
+      { product: "RDS PostgreSQL", releaseCycle: "17", identifiers: ["db-5"] },
+      { product: "RDS PostgreSQL", releaseCycle: "16", identifiers: ["db-4"] },
+      { product: "RDS PostgreSQL", releaseCycle: "14", identifiers: ["db-3", "db-2"] },
+      { product: "RDS PostgreSQL", releaseCycle: "13", identifiers: ["db-6"] },
+      { product: "RDS MySQL", releaseCycle: "8.0.46", identifiers: ["db-1"] },
+      { product: "AWS Lambda", releaseCycle: undefined, identifiers: ["function-1:$LATEST"] },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  // function-from:$LATEST to function-to:$LATEST.
+  function functionsFrom(from: number, to: number): string[] {
+    return Array.from({ length: to - from + 1 }, (_, i) => `function-${from + i}:$LATEST`);
+  }
+
+  it("shows one page of Components, and counts every Component that passes the filters", async () => {
+    // 39 Components: function-9:$LATEST, db-6, db-1, db-2, db-3,
+    // function-6:$LATEST, function-11:$LATEST to function-40:$LATEST, db-4,
+    // db-5 and function-1:$LATEST.
+    const { lastScan, aws } = await scannedAccount(30);
+
+    const first = dashboardViewOf(lastScan, INITIAL_TABLE_STATE);
+    const second = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, page: { index: 1, size: 25 } });
+
+    expect(groupsOf(first)).toEqual([
+      { identifiers: ["function-9:$LATEST", "db-6", "db-1", "db-2", "db-3", "function-6:$LATEST", ...functionsFrom(11, 29)] },
+    ]);
+    expect(first).toMatchObject({ page: 0, pages: 2, range: { from: 1, to: 25, of: 39 } });
+    expect(groupsOf(second)).toEqual([{ identifiers: [...functionsFrom(30, 40), "db-4", "db-5", "function-1:$LATEST"] }]);
+    expect(second).toMatchObject({ page: 1, pages: 2, range: { from: 26, to: 39, of: 39 } });
+    expect(second.counts).toEqual({ AWOL: 3, "Falling behind": 2, Current: 33, Untracked: 1 });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows the last page for a page past it, as after a Scan that finds fewer Components", async () => {
+    const { lastScan, aws } = await scannedAccount(30);
+
+    const pastTheEnd = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, page: { index: 3, size: 25 } });
+    const bigger = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, page: { index: 1, size: 50 } });
+
+    expect(groupsOf(pastTheEnd)).toEqual([{ identifiers: [...functionsFrom(30, 40), "db-4", "db-5", "function-1:$LATEST"] }]);
+    expect(pastTheEnd).toMatchObject({ page: 1, pages: 2, range: { from: 26, to: 39, of: 39 } });
+    expect(groupsOf(bigger)[0]!.identifiers).toHaveLength(39);
+    expect(bigger).toMatchObject({ page: 0, pages: 1, range: { from: 1, to: 39, of: 39 } });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows a group that goes on past its page again on the next, with all of its Components counted on both", async () => {
+    const { lastScan, aws } = await scannedAccount(30);
+
+    const first = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, grouped: true });
+    const second = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, grouped: true, page: { index: 1, size: 25 } });
+
+    const groupsCounted = (view: DashboardView) =>
+      view.groups.map(({ releaseCycle, count, components }) => ({ releaseCycle, count, identifiers: components.map(({ identifier }) => identifier) }));
+    expect(groupsCounted(first).at(-1)).toEqual({ releaseCycle: "python3.12", count: 31, identifiers: ["function-6:$LATEST", ...functionsFrom(11, 29)] });
+    expect(groupsCounted(second)).toEqual([
+      { releaseCycle: "python3.12", count: 31, identifiers: functionsFrom(30, 40) },
+      { releaseCycle: "16", count: 1, identifiers: ["db-4"] },
+      { releaseCycle: "17", count: 1, identifiers: ["db-5"] },
+      { releaseCycle: undefined, count: 1, identifiers: ["function-1:$LATEST"] },
+    ]);
     expectOnlyJsonReads(aws);
   });
 
