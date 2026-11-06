@@ -1,88 +1,83 @@
-import { History, LoaderCircle } from "lucide-react";
+import { History, Info } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import type { DiscoveredServiceRow, DiscoveryPart, DiscoveryResult, FailedDiscoveryPart, Running } from "../awol/page-model.ts";
-import { DiscoverButtons } from "./discover-buttons.tsx";
-import { formatClock, formatTime, startedWhere } from "./format.ts";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import type { DiscoveredServiceRow, DiscoveryPart, DiscoveryResult, FailedDiscoveryPart } from "../awol/page-model.ts";
+import { RerunFailedPartsButton } from "./discover-buttons.tsx";
+import { formatTime } from "./format.ts";
 
-// The account's last Discovery: when it ran, every service it counts with
-// the regions and versions it found, and the parts it could not read, with
-// buttons to run it again. `running` is whether a Discovery is running now,
-// `run` the one holding the account's lock, which says who started it, once
-// it holds it, and `busy` whether any Scan or Discovery of the account is
-// running, which the buttons wait for.
-export function DiscoverySection({
-  discovery,
-  running,
-  run,
-  busy,
-}: {
-  discovery?: DiscoveryResult;
-  running: boolean;
-  run?: Running;
-  busy: boolean;
-}) {
+// The account's last Discovery: every service it counts with the regions and
+// versions it found, the services awol supports apart from the rest, and the
+// parts it could not read, with a button to read only those again. `busy` is whether any Scan or Discovery of the account is
+// running, which the button waits for. The top bar tells when it ran and
+// runs it again.
+export function DiscoverySection({ discovery, busy }: { discovery: DiscoveryResult; busy: boolean }) {
+  const supported = discovery.services.filter(({ supported }) => supported);
+  const unsupported = discovery.services.filter(({ supported }) => !supported);
   return (
-    <section className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-        <h2 className="font-semibold">Discovery</h2>
-        <p>
-          {running ? (
-            <span className="flex items-center gap-2">
-              <LoaderCircle className="size-4 animate-spin" />
-              Running since {formatClock(run?.startedAt ?? discovery?.startedAt ?? new Date().toISOString())}
-              {run !== undefined && `, ${startedWhere(run)}`}
-            </span>
-          ) : discovery === undefined ? (
-            "none yet"
-          ) : discovery.finishedAt === undefined ? (
-            `Stopped part-way, started ${formatTime(discovery.startedAt)}`
-          ) : (
-            <>
-              <span className="text-muted-foreground">Last run</span> {formatTime(discovery.finishedAt)}
-            </>
-          )}
-        </p>
-        <DiscoverButtons running={busy} anyFailed={(discovery?.failedParts.length ?? 0) > 0} />
-      </div>
-      {discovery !== undefined && (
-        <>
-          {discovery.failedParts.length > 0 && <FailedParts parts={discovery.failedParts} />}
-          <p className="text-sm text-muted-foreground">
-            {discovery.regions.length} enabled {discovery.regions.length === 1 ? "region" : "regions"}
-            {discovery.regions.length > 0 && `: ${discovery.regions.join(", ")}`}
-          </p>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Service</TableHead>
-                <TableHead>Resources</TableHead>
-                <TableHead>Regions</TableHead>
-                <TableHead>Versions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {discovery.services.map((row) => (
-                <ServiceRow key={row.service} row={row} />
-              ))}
-            </TableBody>
-          </Table>
-        </>
-      )}
+    <section className="flex flex-col gap-6">
+      {discovery.failedParts.length > 0 && <FailedParts parts={discovery.failedParts} busy={busy} />}
+      <Tabs defaultValue="supported">
+        <div className="flex items-center gap-2">
+          <TabsList>
+            <TabsTrigger value="supported">
+              Supported <span className="tabular-nums text-muted-foreground">({supported.length})</span>
+            </TabsTrigger>
+            <TabsTrigger value="unsupported">
+              Not supported <span className="tabular-nums text-muted-foreground">({unsupported.length})</span>
+            </TabsTrigger>
+          </TabsList>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button type="button" aria-label="What Supported and Not supported mean" className="rounded-full text-muted-foreground outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50">
+                <Info className="size-4" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" className="max-w-xs">
+              <p>Supported: services awol can monitor. Choose them as Monitored services for a Scan to read their Components and lifecycle.</p>
+              <p className="mt-1">Not supported: services Discovery counts so you know they are there, which awol cannot monitor yet.</p>
+            </TooltipContent>
+          </Tooltip>
+        </div>
+        <TabsContent value="supported">
+          <ServicesTable rows={supported} />
+        </TabsContent>
+        <TabsContent value="unsupported">
+          <ServicesTable rows={unsupported} />
+        </TabsContent>
+      </Tabs>
     </section>
+  );
+}
+
+// Services the Discovery counts, one row each, in columns as wide in either
+// tab whatever their rows hold.
+function ServicesTable({ rows }: { rows: DiscoveredServiceRow[] }) {
+  return (
+    <Table className="table-fixed">
+      <TableHeader>
+        <TableRow>
+          <TableHead className="w-1/5">Service</TableHead>
+          <TableHead className="w-1/10">Resources</TableHead>
+          <TableHead className="w-3/10">Regions</TableHead>
+          <TableHead className="w-2/5">Versions</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((row) => (
+          <ServiceRow key={row.service} row={row} />
+        ))}
+      </TableBody>
+    </Table>
   );
 }
 
 function ServiceRow({ row }: { row: DiscoveredServiceRow }) {
   return (
     <TableRow className={row.count === 0 ? "text-muted-foreground" : undefined}>
-      <TableCell className="align-top">
-        <span className="flex items-center gap-2">
-          {row.service}
-          {!row.supported && <Badge variant="outline">not supported</Badge>}
-        </span>
-      </TableCell>
+      <TableCell className="align-top">{row.service}</TableCell>
       <TableCell className="align-top tabular-nums">{row.count === 0 ? "none" : row.count}</TableCell>
       <TableCell className="align-top">
         <ul>
@@ -120,13 +115,14 @@ function ServiceRow({ row }: { row: DiscoveredServiceRow }) {
 
 // The parts of the last Discovery that could not be read: each Stale,
 // showing its last successful read, or never read, showing nothing but its
-// error.
-function FailedParts({ parts }: { parts: FailedDiscoveryPart[] }) {
+// error, with a button to read only those again.
+function FailedParts({ parts, busy }: { parts: FailedDiscoveryPart[]; busy: boolean }) {
   return (
     <Alert className="max-w-4xl">
       <History />
       <AlertTitle>Some parts of the last Discovery could not be read</AlertTitle>
       <AlertDescription>
+        <RerunFailedPartsButton busy={busy} />
         <ul className="flex flex-col gap-2">
           {parts.map(({ part, error, lastReadAt }) => (
             <li key={partName(part)}>

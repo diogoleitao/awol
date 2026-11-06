@@ -85,3 +85,6 @@ export type PageModel =
       running?: Running;
     }
   | { kind: "login-needed"; reason: string };
+
+// What the dashboard shows of an account whose credentials work.
+export type SignedIn = Extract<PageModel, { kind: "signed-in" }>;

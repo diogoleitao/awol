@@ -9,7 +9,9 @@ import type { EndOfLifeFetcher } from "../endoflife/fetcher.ts";
 import { openAwol, type Progress } from "./awol.ts";
 import { SUPPORTED_SERVICES } from "./component.ts";
 import { type DashboardView, dashboardViewOf, filterOptionsOf, INITIAL_TABLE_STATE, NO_FILTERS, nextSort } from "./dashboard-view.ts";
-import type { DiscoveryResult } from "./page-model.ts";
+import { nextStepOf } from "./next-step.ts";
+import type { DiscoveryResult, LastScan, SignedIn } from "./page-model.ts";
+import { topBarOf } from "./top-bar.ts";
 // Recorded from `aws sts get-caller-identity --output json` against a real
 // account, then stripped of the account ID, user ID and user name.
 import callerIdentity from "./fixtures/sts-get-caller-identity.json" with { type: "json" };
@@ -3794,5 +3796,124 @@ describe("the progress of a Scan or Discovery", () => {
     expect(regionsCalled(aws, "lambda list-functions")).toEqual([]);
     expectOnlyJsonReads(before);
     expectOnlyJsonReads(aws);
+  });
+});
+
+// The page of an account with `model`'s Discovery, Monitored services, last
+// Scan and running Scan or Discovery, and nothing else.
+function signedIn(model: Partial<SignedIn> = {}): SignedIn {
+  return { kind: "signed-in", accountId: "123456789012", ...model };
+}
+
+// A Discovery that started at 08:00 and found nothing, with `result`.
+function discovery(result: Partial<DiscoveryResult> = {}): DiscoveryResult {
+  return { startedAt: "2026-11-04T08:00:00Z", regions: [], services: [], failedParts: [], ...result };
+}
+
+// A Scan at 09:00 that found nothing, with `result`.
+function lastScan(result: Partial<LastScan> = {}): LastScan {
+  return {
+    ranAt: "2026-11-04T09:00:00Z",
+    counts: { AWOL: 0, "Falling behind": 0, Current: 0, Untracked: 0 },
+    components: [],
+    failedParts: [],
+    unmonitoredServices: [],
+    ...result,
+  };
+}
+
+describe("the top bar", () => {
+  it("shows a Discovery and a Scan that have never run, the Scan waiting for Monitored services", () => {
+    expect(topBarOf(signedIn(), false)).toEqual({
+      discovery: { lastRun: { kind: "none-yet" }, failedParts: 0, warning: false },
+      scan: { lastRun: { kind: "none-yet" }, failedParts: 0, warning: false, blocked: "no-monitored-services" },
+    });
+  });
+
+  it("shows when the last Discovery finished and the last Scan ran, both ready to run again", () => {
+    const model = signedIn({
+      discovery: discovery({ finishedAt: "2026-11-04T08:05:00Z" }),
+      monitoredServices: ["RDS"],
+      lastScan: lastScan(),
+    });
+
+    expect(topBarOf(model, false)).toEqual({
+      discovery: { lastRun: { kind: "ran", at: "2026-11-04T08:05:00Z" }, failedParts: 0, warning: false },
+      scan: { lastRun: { kind: "ran", at: "2026-11-04T09:00:00Z" }, failedParts: 0, warning: false },
+    });
+  });
+
+  it("marks a Discovery that stopped part-way, with when it started", () => {
+    const { discovery: item } = topBarOf(signedIn({ discovery: discovery() }), false);
+
+    expect(item).toEqual({ lastRun: { kind: "stopped-part-way", startedAt: "2026-11-04T08:00:00Z" }, failedParts: 0, warning: true });
+  });
+
+  it("marks a Discovery and a Scan with parts that could not be read, Stale or never read, counting them", () => {
+    const model = signedIn({
+      discovery: discovery({
+        finishedAt: "2026-11-04T08:05:00Z",
+        failedParts: [
+          { part: { kind: "presence", awsService: "RDS", region: "eu-west-1" }, error: "Throttling", lastReadAt: "2026-11-03T08:00:00Z" },
+          { part: { kind: "versions", service: "Lambda", region: "us-east-1" }, error: "Throttling" },
+        ],
+      }),
+      monitoredServices: ["RDS"],
+      lastScan: lastScan({ failedParts: [{ part: { kind: "regions" }, error: "Throttling" }] }),
+    });
+
+    expect(topBarOf(model, false)).toEqual({
+      discovery: { lastRun: { kind: "ran", at: "2026-11-04T08:05:00Z" }, failedParts: 2, warning: true },
+      scan: { lastRun: { kind: "ran", at: "2026-11-04T09:00:00Z" }, failedParts: 1, warning: true },
+    });
+  });
+
+  it("shows a running Scan with when and where it started, neither able to run until it ends", () => {
+    const running = { operation: "Scan", startedBy: "awol scan", startedAt: "2026-11-04T10:00:00Z" } as const;
+    const model = signedIn({ discovery: discovery({ finishedAt: "2026-11-04T08:05:00Z" }), monitoredServices: ["RDS"], lastScan: lastScan(), running });
+
+    expect(topBarOf(model, false)).toEqual({
+      discovery: { lastRun: { kind: "ran", at: "2026-11-04T08:05:00Z" }, failedParts: 0, warning: false, blocked: "busy" },
+      scan: { lastRun: { kind: "running", run: running }, failedParts: 0, warning: false, blocked: "busy" },
+    });
+  });
+
+  it("shows a Discovery this server runs as running before it holds the account's lock, not as stopped part-way", () => {
+    const model = signedIn({ discovery: discovery(), monitoredServices: ["RDS"] });
+
+    expect(topBarOf(model, true)).toEqual({
+      discovery: { lastRun: { kind: "running" }, failedParts: 0, warning: false, blocked: "busy" },
+      scan: { lastRun: { kind: "none-yet" }, failedParts: 0, warning: false, blocked: "busy" },
+    });
+  });
+
+  it("shows who started a running Discovery and when, once it holds the account's lock", () => {
+    const running = { operation: "Discovery", startedBy: "the dashboard", startedAt: "2026-11-04T10:00:00Z" } as const;
+
+    const { discovery: item } = topBarOf(signedIn({ discovery: discovery(), running }), true);
+
+    expect(item.lastRun).toEqual({ kind: "running", run: running });
+  });
+
+  it("asks for Monitored services over waiting, for a Scan before any are chosen", () => {
+    const { scan } = topBarOf(signedIn(), true);
+
+    expect(scan.blocked).toBe("no-monitored-services");
+  });
+});
+
+describe("the dashboard before its first Scan", () => {
+  it("points to a Discovery when none has run", () => {
+    expect(nextStepOf(signedIn())).toBe("discover");
+  });
+
+  it("points to choosing Monitored services after a Discovery", () => {
+    expect(nextStepOf(signedIn({ discovery: discovery({ finishedAt: "2026-11-04T08:05:00Z" }) }))).toBe("choose-monitored-services");
+  });
+
+  it("points to a Scan once Monitored services are chosen", () => {
+    const model = signedIn({ discovery: discovery({ finishedAt: "2026-11-04T08:05:00Z" }), monitoredServices: ["RDS"] });
+
+    expect(nextStepOf(model)).toBe("scan");
   });
 });

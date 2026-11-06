@@ -1,77 +1,55 @@
-import { History, Info, KeyRound, LoaderCircle } from "lucide-react";
+import { History, Info } from "lucide-react";
+import Link from "next/link";
 import { connection } from "next/server";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import type { FailedPart, LastScan, Running, ScanPart, UnmonitoredService } from "../awol/page-model.ts";
-import { appAwol, discoveryRunning } from "./app-awol.ts";
-import { DiscoverySection } from "./discovery-section.tsx";
-import { formatClock, formatTime, startedWhere } from "./format.ts";
-import { MonitoredServicesForm } from "./monitored-services-form.tsx";
-import { ScanButton } from "./scan-button.tsx";
+import type { FailedPart, LastScan, ScanPart, UnmonitoredService } from "../awol/page-model.ts";
+import { type NextStep, nextStepOf } from "../awol/next-step.ts";
+import { pageModel } from "./app-awol.ts";
+import { formatTime } from "./format.ts";
+import { LoginNeeded } from "./login-needed.tsx";
 import { ScanTable } from "./scan-table.tsx";
 
 export default async function DashboardPage() {
   await connection();
-  const model = await appAwol().pageModel();
+  const model = await pageModel();
 
-  if (model.kind === "login-needed") {
-    return (
-      <Alert variant="destructive" className="max-w-2xl">
-        <KeyRound />
-        <AlertTitle>Your AWS credentials have expired or need an SSO login</AlertTitle>
-        <AlertDescription>
-          <p>
-            Log in again with the profile active in the shell that started awol, for example with{" "}
-            <code>aws sso login</code>, then reload this page.
-          </p>
-          <p className="font-mono text-xs">{model.reason}</p>
-        </AlertDescription>
-      </Alert>
-    );
-  }
+  if (model.kind === "login-needed") return <LoginNeeded reason={model.reason} />;
 
-  // A Discovery this server has started is running before it holds the
-  // account's lock.
-  const discovering = discoveryRunning() || model.running?.operation === "Discovery";
-  const busy = discovering || model.running !== undefined;
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-        <p>
-          <span className="text-muted-foreground">AWS account</span>{" "}
-          <span className="font-mono">{model.accountId}</span>
-        </p>
-        <p>
-          <span className="text-muted-foreground">Last Scan</span>{" "}
-          {model.lastScan === undefined ? "none yet" : formatTime(model.lastScan.ranAt)}
-        </p>
-        {model.monitoredServices !== undefined && <ScanButton busy={busy} />}
-        {model.running?.operation === "Scan" && <RunningNote running={model.running} />}
-      </div>
-      <DiscoverySection
-        discovery={model.discovery}
-        running={discovering}
-        run={model.running?.operation === "Discovery" ? model.running : undefined}
-        busy={busy}
-      />
-      {model.discovery !== undefined && (
-        <MonitoredServicesForm
-          services={model.discovery.services.filter(({ supported }) => supported)}
-          monitored={model.monitoredServices}
-        />
-      )}
-      {model.lastScan !== undefined && <ScanResult scan={model.lastScan} />}
+      {model.lastScan === undefined ? <NoScanYet next={nextStepOf(model)} /> : <ScanResult scan={model.lastScan} />}
     </div>
   );
 }
 
-// The Scan of the account running now, which the buttons wait for, and who
-// started it. A running Discovery shows in the Discovery section instead.
-function RunningNote({ running }: { running: Running }) {
+// The dashboard of an account with no Scan yet, pointing to the step before
+// its first one, `next`.
+function NoScanYet({ next }: { next: NextStep }) {
   return (
-    <p className="flex items-center gap-2 text-sm text-muted-foreground">
-      <LoaderCircle className="size-4 animate-spin" />
-      Scanning since {formatClock(running.startedAt)}, {startedWhere(running)}
+    <p className="text-muted-foreground">
+      No Scan yet.
+      {next === "discover" && (
+        <>
+          {" "}
+          Run a <DiscoveryLink>Discovery</DiscoveryLink> first, then choose Monitored services.
+        </>
+      )}
+      {next === "choose-monitored-services" && (
+        <>
+          {" "}
+          Choose <DiscoveryLink>Monitored services</DiscoveryLink> for a Scan to read.
+        </>
+      )}
     </p>
+  );
+}
+
+// A link to the Discovery page, where Monitored services are chosen.
+function DiscoveryLink({ children }: { children: string }) {
+  return (
+    <Link href="/discovery" className="font-medium text-foreground underline underline-offset-4">
+      {children}
+    </Link>
   );
 }
 
@@ -101,7 +79,9 @@ function UnmonitoredServices({ services }: { services: UnmonitoredService[] }) {
             </li>
           ))}
         </ul>
-        <p>Choose them under Monitored services for a Scan to read them.</p>
+        <p>
+          Choose them under <DiscoveryLink>Monitored services</DiscoveryLink> for a Scan to read them.
+        </p>
       </AlertDescription>
     </Alert>
   );

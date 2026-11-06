@@ -1,38 +1,67 @@
 "use client";
 
-import { Check } from "lucide-react";
+import { Check, Eye } from "lucide-react";
+import { useState } from "react";
 import { useFormStatus } from "react-dom";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import type { DiscoveredServiceRow, SupportedService } from "../awol/page-model.ts";
 import { chooseMonitoredServices } from "./actions.ts";
+import { CollapsibleCard } from "./collapsible-card.tsx";
 
 // Chooses the account's Monitored services among the supported services
-// Discovery counts, each with how many resources it found. `monitored` is
-// the current choice, if one has been made.
+// Discovery counts, in alphabetical order, each with how many resources it
+// found, in a card that opens to change the current choice, `monitored`. It
+// starts open until a choice has been made, and saves only a ticked set that
+// differs from the current choice.
 export function MonitoredServicesForm({ services, monitored }: { services: DiscoveredServiceRow[]; monitored?: SupportedService[] }) {
+  const [ticked, setTicked] = useState<string[]>(monitored ?? []);
+  const current: string[] = monitored ?? [];
+  const changed = ticked.length !== current.length || ticked.some((service) => !current.includes(service));
+  const tick = (service: string, checked: boolean) =>
+    setTicked((was) => (checked ? [...was, service] : was.filter((other) => other !== service)));
   return (
-    <form action={chooseMonitoredServices} className="flex flex-col gap-2">
-      <h3 className="font-medium">Monitored services</h3>
-      {monitored === undefined && (
-        <p className="text-sm text-muted-foreground">Choose the services a Scan reads. Nothing is scanned until you do.</p>
-      )}
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-        {services.map(({ service, count }) => (
-          <label key={service} className="flex items-center gap-2 text-sm">
-            <input type="checkbox" name="service" value={service} defaultChecked={monitored?.some((chosen) => chosen === service)} />
-            {service} <span className="tabular-nums text-muted-foreground">({count})</span>
-          </label>
-        ))}
-        <Submit />
-      </div>
-    </form>
+    <CollapsibleCard
+      icon={<Eye />}
+      title={
+        <>
+          Services <span className="tabular-nums font-normal text-muted-foreground">({monitored?.length ?? 0})</span>
+        </>
+      }
+      description={monitored === undefined ? "The services awol monitors. None chosen yet." : "The services awol monitors. Scans read only these."}
+      defaultOpen={monitored === undefined}
+    >
+      <form action={chooseMonitoredServices} className="flex flex-col gap-4">
+        <ul className="flex flex-col divide-y rounded-md border">
+          {services.toSorted((a, b) => a.service.localeCompare(b.service)).map(({ service, count }) => (
+            <li key={service}>
+              <label className="flex items-center gap-3 px-3 py-2 text-sm hover:bg-accent/50">
+                <Checkbox
+                  name="service"
+                  value={service}
+                  checked={ticked.includes(service)}
+                  onCheckedChange={(checked) => tick(service, checked === true)}
+                />
+                <span className="flex-1">{service}</span>
+                <span className="tabular-nums text-muted-foreground">
+                  {count} {count === 1 ? "resource" : "resources"}
+                </span>
+              </label>
+            </li>
+          ))}
+        </ul>
+        <Submit changed={changed} />
+      </form>
+    </CollapsibleCard>
   );
 }
 
-function Submit() {
+// The Save button, enabled once the ticked set differs from the current
+// choice, `changed`, and not while the form is being sent.
+function Submit({ changed }: { changed: boolean }) {
   const { pending } = useFormStatus();
   return (
-    <Button type="submit" variant="outline" size="sm" disabled={pending}>
+    <Button type="submit" variant="outline" size="sm" className="self-start" disabled={!changed || pending}>
       <Check />
       Save
     </Button>

@@ -1,6 +1,7 @@
 import { type FSWatcher, mkdirSync, watch } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { cache } from "react";
 import { awsCli } from "../aws/runner.ts";
 import { openAwol } from "../awol/awol.ts";
 import type { DiscoveryScope } from "../awol/discovery.ts";
@@ -18,6 +19,10 @@ export function appAwol() {
     clock: { now: () => new Date() },
   });
 }
+
+// What the top bar and the page show, read once per request however many of
+// them ask for it.
+export const pageModel = cache(() => appAwol().pageModel());
 
 // A change the open tabs should show: when it was sent to them.
 export type LiveUpdate = { sentAt: string };
