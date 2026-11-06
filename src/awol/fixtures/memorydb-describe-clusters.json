@@ -1,0 +1,12 @@
+{
+  "Clusters": [
+    {
+      "Name": "memorydb-1",
+      "Status": "available",
+      "Engine": "valkey",
+      "EngineVersion": "7.3",
+      "EnginePatchVersion": "7.3.0",
+      "NodeType": "db.t4g.small"
+    }
+  ]
+}

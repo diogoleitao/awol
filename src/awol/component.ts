@@ -30,16 +30,19 @@ export type SupportDates = {
 // Support, or upgrade it.
 export type ExtendedSupport = "Extended Support" | "auto-upgrade at End of life";
 
-// One Component as a Scan read it from AWS, with its version, if it reports
-// one, AWS's support dates for its AWS major version in its region, where AWS
-// gives them, and the Newest offered version of its Product there, if AWS
-// offers any.
-export type ComponentReading = {
+// One Component as AWS reports it, with its version, if it reports one.
+export type ComponentVersion = {
   service: Service;
   product: Product;
   region: string;
   identifier: string;
   version?: string;
+};
+
+// One Component as a Scan read it from AWS, with its version, AWS's support
+// dates for its AWS major version in its region, where AWS gives them, and
+// the Newest offered version of its Product there, if AWS offers any.
+export type ComponentReading = ComponentVersion & {
   extendedSupport?: ExtendedSupport;
   awsLifecycle: SupportDates;
   newestOffered?: string;

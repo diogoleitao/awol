@@ -1,5 +1,5 @@
 import type { AwsRunner } from "../aws/runner.ts";
-import type { ComponentReading, Product } from "./component.ts";
+import type { ComponentReading, ComponentVersion, Product } from "./component.ts";
 import { highestVersion } from "./drift.ts";
 
 // The OpenSearch Products by the engine in front of a version.
@@ -34,10 +34,10 @@ const DESCRIBE_DOMAINS_LIMIT = 5;
 
 type DomainStatus = { DomainName: string; EngineVersion: string };
 
-// The OpenSearch Service domains in `region`, whichever engine they run, each
-// with the Newest offered version of its engine there. A domain deleted
-// between listing and describing it is not in AWS's answer, so is left out.
-export async function readOpenSearchComponents(aws: AwsRunner, region: string): Promise<ComponentReading[]> {
+// The OpenSearch Service domains in `region` whose engine is a Product. A
+// domain deleted between listing and describing it is not in AWS's answer,
+// so is left out.
+async function listDomains(aws: AwsRunner, region: string): Promise<DomainStatus[]> {
   // One call at a time, so a region makes one call at once.
   const namesStdout = await aws(["opensearch", "list-domain-names", "--region", region, "--output", "json"]);
   const names = (JSON.parse(namesStdout) as { DomainNames: { DomainName: string }[] }).DomainNames.map(({ DomainName }) => DomainName);
@@ -47,7 +47,25 @@ export async function readOpenSearchComponents(aws: AwsRunner, region: string): 
     const stdout = await aws(["opensearch", "describe-domains", "--region", region, "--domain-names", ...batch, "--output", "json"]);
     domains.push(...(JSON.parse(stdout) as { DomainStatusList: DomainStatus[] }).DomainStatusList);
   }
-  const components = domains.filter((domain) => PRODUCTS[splitEngineVersion(domain.EngineVersion).engine] !== undefined);
+  return domains.filter((domain) => PRODUCTS[splitEngineVersion(domain.EngineVersion).engine] !== undefined);
+}
+
+// The OpenSearch Service domains in `region`, whichever engine they run,
+// each with its version only.
+export async function readOpenSearchVersions(aws: AwsRunner, region: string): Promise<ComponentVersion[]> {
+  return (await listDomains(aws, region)).map((domain) => ({
+    service: "OpenSearch",
+    product: PRODUCTS[splitEngineVersion(domain.EngineVersion).engine]!,
+    region,
+    identifier: domain.DomainName,
+    version: domain.EngineVersion,
+  }));
+}
+
+// The OpenSearch Service domains in `region`, whichever engine they run,
+// each with the Newest offered version of its engine there.
+export async function readOpenSearchComponents(aws: AwsRunner, region: string): Promise<ComponentReading[]> {
+  const components = await listDomains(aws, region);
   if (components.length === 0) return [];
 
   const offered = await readOfferedVersions(aws, region);

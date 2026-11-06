@@ -1,5 +1,5 @@
 import type { AwsRunner } from "../aws/runner.ts";
-import type { ComponentReading, Product } from "./component.ts";
+import type { ComponentReading, ComponentVersion, Product } from "./component.ts";
 import { highestVersion, lowestVersion } from "./drift.ts";
 
 // The ElastiCache Products by Engine.
@@ -26,19 +26,19 @@ type ServerlessCache = { ServerlessCacheName: string; Engine: string; FullEngine
 type Cache = { identifier: string; Engine: string; version?: string };
 
 // The ElastiCache replication groups, standalone cache clusters and
-// Serverless caches in `region` that are Components, each with the Newest
-// offered version of its Product there. AWS lists a replication group's
-// member cache clusters among its cache clusters; a member is not a
-// Component: its group is. A replication group reports no version, so it
-// takes the lowest of its members', which differ only part-way through an
-// upgrade, and has none when AWS lists none of its members.
-export async function readElastiCacheComponents(aws: AwsRunner, region: string): Promise<ComponentReading[]> {
+// Serverless caches in `region` that are Components. AWS lists a
+// replication group's member cache clusters among its cache clusters; a
+// member is not a Component: its group is. A replication group reports no
+// version, so it takes the lowest of its members', which differ only
+// part-way through an upgrade, and has none when AWS lists none of its
+// members.
+async function listCaches(aws: AwsRunner, region: string): Promise<Cache[]> {
   // One call at a time, so a region makes one call at once.
   const groupsStdout = await aws(["elasticache", "describe-replication-groups", "--region", region, "--output", "json"]);
   const clustersStdout = await aws(["elasticache", "describe-cache-clusters", "--region", region, "--output", "json"]);
   const serverlessStdout = await aws(["elasticache", "describe-serverless-caches", "--region", region, "--output", "json"]);
   const clusters = (JSON.parse(clustersStdout) as { CacheClusters: CacheCluster[] }).CacheClusters;
-  const caches: Cache[] = [
+  return [
     ...(JSON.parse(groupsStdout) as { ReplicationGroups: ReplicationGroup[] }).ReplicationGroups.map((group) => ({
       identifier: group.ReplicationGroupId,
       Engine: group.Engine,
@@ -55,6 +55,23 @@ export async function readElastiCacheComponents(aws: AwsRunner, region: string):
       version: cache.FullEngineVersion,
     })),
   ].filter((cache) => PRODUCTS[cache.Engine] !== undefined);
+}
+
+// The ElastiCache Components in `region`, each with its version only.
+export async function readElastiCacheVersions(aws: AwsRunner, region: string): Promise<ComponentVersion[]> {
+  return (await listCaches(aws, region)).map((cache) => ({
+    service: "ElastiCache",
+    product: PRODUCTS[cache.Engine]!,
+    region,
+    identifier: cache.identifier,
+    version: cache.version,
+  }));
+}
+
+// The ElastiCache Components in `region`, each with the Newest offered
+// version of its Product there.
+export async function readElastiCacheComponents(aws: AwsRunner, region: string): Promise<ComponentReading[]> {
+  const caches = await listCaches(aws, region);
 
   const newestOfferedByEngine = new Map<string, string | undefined>();
   for (const engine of new Set(caches.map((cache) => cache.Engine))) {

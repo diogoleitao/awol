@@ -3,7 +3,8 @@ import { AwsCliError, type AwsRunner } from "../aws/runner.ts";
 import { openStore } from "../data/store.ts";
 import type { EndOfLifeFetcher } from "../endoflife/fetcher.ts";
 import { openReleaseCycles } from "../endoflife/release-cycles.ts";
-import type { ComponentDrift, ComponentRow, LastScan, PageModel, SupportDates } from "./page-model.ts";
+import { type Discovery, type DiscoveryScope, discoveryResultOf, runDiscovery } from "./discovery.ts";
+import type { ComponentDrift, ComponentRow, DiscoveryResult, LastScan, PageModel, SupportDates } from "./page-model.ts";
 import { componentsOf, failedPartsOf, runScan, type Scan } from "./scan.ts";
 import { countsOf, STATUSES, statusOf } from "./status.ts";
 
@@ -22,6 +23,12 @@ export type AwolOptions = {
 type LoginNeeded = { kind: "login-needed"; reason: string };
 
 export type ScanOutcome = { kind: "scanned" } | LoginNeeded;
+
+export type DiscoveryOutcome = { kind: "discovered" } | LoginNeeded;
+
+// What to read in a Discovery, and what to tell the Discovery, as the
+// dashboard would show it, each time it keeps a part.
+export type DiscoverOptions = { scope?: DiscoveryScope; onPart?: (discovery: DiscoveryResult) => void };
 
 export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions) {
   // Every AWS call awol makes goes through here (ADR 0002).
@@ -57,6 +64,30 @@ export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions
   }
 
   return {
+    // Finds which services the account uses, region by region, keeping each
+    // part as the account's last Discovery as soon as it is read and telling
+    // `onPart`. With scope "failed", reads only the parts the last Discovery
+    // could not read. Credentials that expire part-way leave the last
+    // Discovery as it was.
+    discover({ scope = "all", onPart }: DiscoverOptions = {}): Promise<DiscoveryOutcome> {
+      return orLoginNeeded(async () => {
+        const accountId = await identify();
+        const account = store.account(accountId);
+        const { discovery: previous } = await account.load();
+        const save = (discovery: Discovery | undefined) => account.update((state) => ({ ...state, discovery }));
+        try {
+          await runDiscovery(aws, () => clock.now(), previous, scope, async (discovery) => {
+            await save(discovery);
+            onPart?.(discoveryResultOf(discovery));
+          });
+        } catch (error) {
+          await save(previous);
+          throw error;
+        }
+        return { kind: "discovered" } as const;
+      });
+    },
+
     // Reads every Component of the account and its lifecycle data, and keeps
     // them as the account's last Scan.
     scan(): Promise<ScanOutcome> {
@@ -74,10 +105,11 @@ export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions
     pageModel(): Promise<PageModel> {
       return orLoginNeeded(async () => {
         const accountId = await identify();
-        const { lastScan } = await store.account(accountId).load();
+        const { discovery, lastScan } = await store.account(accountId).load();
         return {
           kind: "signed-in",
           accountId,
+          discovery: discovery === undefined ? undefined : discoveryResultOf(discovery),
           lastScan: lastScan === undefined ? undefined : lastScanOf(lastScan, clock.now()),
         } as const;
       });

@@ -1,9 +1,21 @@
 import type { ExtendedSupport, Service, SupportDates } from "./component.ts";
+import type { DiscoveredServiceRow, DiscoveryPart, DiscoveryResult, FailedDiscoveryPart } from "./discovery.ts";
 import type { Drift } from "./drift.ts";
 import type { ComponentDrift, FailedPart, ScanPart, Stale } from "./scan.ts";
 import type { Status } from "./status.ts";
 
-export type { ComponentDrift, Drift, FailedPart, ScanPart, Stale, SupportDates };
+export type {
+  ComponentDrift,
+  DiscoveredServiceRow,
+  DiscoveryPart,
+  DiscoveryResult,
+  Drift,
+  FailedDiscoveryPart,
+  FailedPart,
+  ScanPart,
+  Stale,
+  SupportDates,
+};
 
 // One row of the dashboard's table: a Component, its Status, and the dates of
 // its Release Cycle that exist. End of life and the end of Extended Support
@@ -44,9 +56,9 @@ export type LastScan = {
   failedParts: FailedPart[];
 };
 
-// What the dashboard shows: the AWS account of the active profile and its
-// last Scan, if one has run, or, when its credentials have expired or need an
-// SSO login, the `aws` CLI's reason.
+// What the dashboard shows: the AWS account of the active profile, its last
+// Discovery and its last Scan, each if one has run, or, when its credentials
+// have expired or need an SSO login, the `aws` CLI's reason.
 export type PageModel =
-  | { kind: "signed-in"; accountId: string; lastScan?: LastScan }
+  | { kind: "signed-in"; accountId: string; discovery?: DiscoveryResult; lastScan?: LastScan }
   | { kind: "login-needed"; reason: string };

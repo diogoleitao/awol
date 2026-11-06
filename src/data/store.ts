@@ -1,13 +1,16 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import type { Discovery } from "../awol/discovery.ts";
 import type { Scan } from "../awol/scan.ts";
 import { ifExists, writeFileAtomically } from "../fs.ts";
 
-// What awol keeps about one AWS account: when it first and last saw it, and
-// its last Scan. Before awol sees an account there is nothing.
+// What awol keeps about one AWS account: when it first and last saw it, its
+// last Discovery and its last Scan. Before awol sees an account there is
+// nothing.
 export type AccountState = {
   firstSeenAt?: string;
   lastSeenAt?: string;
+  discovery?: Discovery;
   lastScan?: Scan;
 };
 

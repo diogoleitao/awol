@@ -1,0 +1,13 @@
+{
+  "Reservations": [
+    {
+      "Instances": [
+        { "InstanceId": "i-1", "InstanceType": "t3.micro", "State": { "Code": 16, "Name": "running" } },
+        { "InstanceId": "i-2", "InstanceType": "t3.micro", "State": { "Code": 80, "Name": "stopped" } }
+      ]
+    },
+    {
+      "Instances": [{ "InstanceId": "i-3", "InstanceType": "t3.small", "State": { "Code": 48, "Name": "terminated" } }]
+    }
+  ]
+}

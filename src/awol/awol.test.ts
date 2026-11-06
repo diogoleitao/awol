@@ -7,6 +7,7 @@ import { type AwsRunner, awsCliError } from "../aws/runner.ts";
 import type { EndOfLifeFetcher } from "../endoflife/fetcher.ts";
 import { openAwol } from "./awol.ts";
 import { type DashboardView, dashboardViewOf, filterOptionsOf, NO_FILTERS } from "./dashboard-view.ts";
+import type { DiscoveryResult } from "./page-model.ts";
 // Recorded from `aws sts get-caller-identity --output json` against a real
 // account, then stripped of the account ID, user ID and user name.
 import callerIdentity from "./fixtures/sts-get-caller-identity.json" with { type: "json" };
@@ -101,6 +102,18 @@ import listFunctions from "./fixtures/lambda-list-functions.json" with { type: "
 import listAliases from "./fixtures/lambda-list-aliases.json" with { type: "json" };
 // Recorded from endoflife.date's API on 2026-11-05.
 import awsLambda from "./fixtures/endoflife/aws-lambda.json" with { type: "json" };
+// Written by hand in the shape of `aws <service> <subcommand> --region
+// eu-west-1 --output json` for the services Discovery counts but awol does
+// not monitor, since the recorded account runs none of them: two EKS
+// clusters, an MSK cluster, an Amazon MQ broker, a MemoryDB cluster, two
+// Elastic Beanstalk environments, and three EC2 instances, one of them
+// terminated.
+import eksListClusters from "./fixtures/eks-list-clusters.json" with { type: "json" };
+import kafkaListClusters from "./fixtures/kafka-list-clusters-v2.json" with { type: "json" };
+import mqListBrokers from "./fixtures/mq-list-brokers.json" with { type: "json" };
+import memorydbDescribeClusters from "./fixtures/memorydb-describe-clusters.json" with { type: "json" };
+import elasticBeanstalkEnvironments from "./fixtures/elasticbeanstalk-describe-environments.json" with { type: "json" };
+import ec2DescribeInstances from "./fixtures/ec2-describe-instances.json" with { type: "json" };
 
 const NOW = new Date("2026-11-03T12:00:00Z");
 
@@ -510,7 +523,38 @@ type AccountContents = {
   serverlessCaches?: Record<string, ServerlessCache[]>;
   domains?: Record<string, Domain[]>;
   functions?: Record<string, DeployedFunction[]>;
+  unmonitored?: Record<string, Partial<Record<UnmonitoredCall, unknown>>>;
 };
+
+// The calls Discovery counts the services awol does not monitor with, by
+// the argv in front of `--region`, and what each answers with no resources.
+const UNMONITORED_CALLS = {
+  "eks list-clusters": { clusters: [] },
+  "kafka list-clusters-v2": { ClusterInfoList: [] },
+  "mq list-brokers": { BrokerSummaries: [] },
+  "memorydb describe-clusters": { Clusters: [] },
+  "elasticbeanstalk describe-environments": { Environments: [] },
+  "ec2 describe-instances": { Reservations: [] },
+};
+
+type UnmonitoredCall = keyof typeof UNMONITORED_CALLS;
+
+// The hand-written answer of each call for the services awol does not
+// monitor.
+const UNMONITORED: Record<UnmonitoredCall, unknown> = {
+  "eks list-clusters": eksListClusters,
+  "kafka list-clusters-v2": kafkaListClusters,
+  "mq list-brokers": mqListBrokers,
+  "memorydb describe-clusters": memorydbDescribeClusters,
+  "elasticbeanstalk describe-environments": elasticBeanstalkEnvironments,
+  "ec2 describe-instances": ec2DescribeInstances,
+};
+
+function unmonitoredIn(region: string, call: UnmonitoredCall) {
+  // Elastic Beanstalk lists deleted environments unless told not to.
+  const options = call === "elasticbeanstalk describe-environments" ? " --no-include-deleted" : "";
+  return `${call} --region ${region}${options} --output json`;
+}
 
 // The recorded account, signed in: its regions, its RDS instances and DB
 // clusters, its ElastiCache replication groups, cache clusters and
@@ -534,6 +578,7 @@ function accountAnswers({
   serverlessCaches = {},
   domains = {},
   functions = {},
+  unmonitored = {},
 }: AccountContents = {}): Record<string, Answer> {
   const answers: Record<string, Answer> = {
     [CALLER_IDENTITY]: SIGNED_IN,
@@ -548,6 +593,7 @@ function accountAnswers({
     ...Object.keys(serverlessCaches),
     ...Object.keys(domains),
     ...Object.keys(functions),
+    ...Object.keys(unmonitored),
   ]) {
     answers[describeDbInstancesIn(region)] = { stdout: JSON.stringify({ DBInstances: instances[region] ?? [] }) };
     answers[describeDbClustersIn(region)] = { stdout: JSON.stringify({ DBClusters: clusters[region] ?? [] }) };
@@ -566,6 +612,9 @@ function accountAnswers({
     Object.assign(answers, domainAnswers(region, domains[region] ?? []));
     answers[listVersionsIn(region)] = { stdout: JSON.stringify(openSearchVersions) };
     Object.assign(answers, functionAnswers(region, functions[region] ?? []));
+    for (const [call, none] of Object.entries(UNMONITORED_CALLS) as [UnmonitoredCall, unknown][]) {
+      answers[unmonitoredIn(region, call)] = { stdout: JSON.stringify(unmonitored[region]?.[call] ?? none) };
+    }
   }
   return answers;
 }
@@ -2452,5 +2501,417 @@ describe("the dashboard's filters and grouping", () => {
       statuses: ["AWOL", "Falling behind", "Current", "Untracked"],
     });
     expectOnlyJsonReads(aws);
+  });
+});
+
+describe("Discovery", () => {
+  const LATER = new Date("2026-11-04T08:30:00Z");
+
+  // The page's Discovery on `now`.
+  async function discovery(aws: AwsRunner, now = NOW): Promise<DiscoveryResult> {
+    const model = await awol(aws, now).pageModel();
+    if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+    return model.discovery!;
+  }
+
+  // Each service Discovery found resources of, with how many in all and in
+  // each region.
+  function found({ services }: DiscoveryResult) {
+    return services.filter(({ count }) => count > 0).map(({ service, count, regions }) => ({ service, count, regions }));
+  }
+
+  // The regions `aws` made the call `service subcommand` in, each once, in
+  // order.
+  function regionsCalled(aws: { calls: string[][] }, call: string): string[] {
+    const regions = aws.calls
+      .filter(([service, subcommand]) => `${service} ${subcommand}` === call)
+      .map((argv) => argv[argv.indexOf("--region") + 1]!);
+    return [...new Set(regions)].sort();
+  }
+
+  it("lists the enabled regions, then counts each service's resources in each of them", async () => {
+    const aws = account({
+      functions: { "us-east-1": [{ latest: lambdaFunction("function-6") }, { latest: lambdaFunction("function-7") }] },
+    });
+
+    expect(await awol(aws).discover()).toEqual({ kind: "discovered" });
+
+    const result = await discovery(aws);
+    expect(result).toMatchObject({
+      startedAt: "2026-11-03T12:00:00.000Z",
+      finishedAt: "2026-11-03T12:00:00.000Z",
+      regions: ENABLED_REGIONS,
+      failedParts: [],
+    });
+    expect(found(result)).toEqual([
+      { service: "RDS", count: 5, regions: [{ region: "eu-west-1", count: 5 }] },
+      { service: "Lambda", count: 2, regions: [{ region: "us-east-1", count: 2 }] },
+    ]);
+    for (const call of [
+      "rds describe-db-instances",
+      "rds describe-db-clusters",
+      "elasticache describe-replication-groups",
+      "elasticache describe-cache-clusters",
+      "elasticache describe-serverless-caches",
+      "opensearch list-domain-names",
+      "lambda list-functions",
+      ...Object.keys(UNMONITORED_CALLS),
+    ]) {
+      expect(regionsCalled(aws, call), call).toEqual(ENABLED_REGIONS);
+    }
+    expectOnlyJsonReads(aws);
+  });
+
+  it("reads the versions of each supported service where it has resources, and nowhere else", async () => {
+    const aws = account({
+      clusters: { "eu-west-1": CLUSTERS },
+      functions: { "us-east-1": [{ latest: lambdaFunction("function-6") }, { latest: lambdaFunction("function-1") }] },
+    });
+
+    await awol(aws).discover();
+
+    const versions = Object.fromEntries((await discovery(aws)).services.map(({ service, count, versions }) => [service, { count, versions }]));
+    expect(versions.RDS).toEqual({
+      count: 6,
+      versions: [
+        { product: "RDS MySQL", version: "8.0.46-rds.20260624", count: 1 },
+        { product: "RDS PostgreSQL", version: "14.19", count: 1 },
+        { product: "RDS PostgreSQL", version: "14.22", count: 1 },
+        { product: "RDS PostgreSQL", version: "16.13", count: 2 },
+        { product: "RDS PostgreSQL", version: "17.9", count: 1 },
+      ],
+    });
+    expect(versions.Aurora).toEqual({
+      count: 2,
+      versions: [
+        { product: "Aurora MySQL", version: "8.0.mysql_aurora.3.04.0", count: 1 },
+        { product: "Aurora PostgreSQL", version: "15.4", count: 1 },
+      ],
+    });
+    expect(versions.Lambda).toEqual({
+      count: 2,
+      versions: [
+        { product: "AWS Lambda", version: "python3.12", count: 1 },
+        { product: "AWS Lambda", count: 1 },
+      ],
+    });
+    expect(versions["ElastiCache Redis OSS"]).toEqual({ count: 0, versions: [] });
+    expect(versions["OpenSearch Service"]).toEqual({ count: 0, versions: [] });
+    expect(regionsCalled(aws, "rds describe-db-clusters")).toEqual(ENABLED_REGIONS);
+    expect(regionsCalled(aws, "lambda list-aliases")).toEqual(["us-east-1"]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("reads only versions, none of AWS's support dates or offered versions, so a denied call for those fails no part", async () => {
+    const aws = fakeAws({
+      ...accountAnswers({
+        replicationGroups: { "eu-west-1": [replicationGroup("group-4").group] },
+        cacheClusters: { "eu-west-1": replicationGroup("group-4").members },
+        domains: { "eu-west-1": [domain("domain-1")] },
+      }),
+      [listVersionsIn("eu-west-1")]: { stderr: awsErrors.accessDenied },
+      [describeMajorVersionsIn("eu-west-1", "postgres")]: { stderr: awsErrors.accessDenied },
+    });
+
+    await awol(aws).discover();
+
+    const result = await discovery(aws);
+    expect(result.failedParts).toEqual([]);
+    expect(result.services.find(({ service }) => service === "OpenSearch Service")!.versions).toEqual([
+      { product: "OpenSearch", version: "OpenSearch_2.11", count: 1 },
+    ]);
+    expect(result.services.find(({ service }) => service === "ElastiCache Redis OSS")!.versions).toEqual([
+      { product: "ElastiCache Redis OSS", version: "7.1.0", count: 1 },
+    ]);
+    for (const call of [
+      "rds describe-db-major-engine-versions",
+      "rds describe-db-engine-versions",
+      "elasticache describe-cache-engine-versions",
+      "opensearch list-versions",
+    ]) {
+      expect(regionsCalled(aws, call), call).toEqual([]);
+    }
+    expectOnlyJsonReads(aws);
+  });
+
+  it("counts the services awol cannot monitor yet as not supported, those from supported services' calls included, reading none of their versions", async () => {
+    const aws = account({
+      instances: {
+        "eu-west-1": [
+          instance("db-6"),
+          instance("db-7", { Engine: "oracle-ee", EngineVersion: "19.0.0.0.ru-2025-10.rur-2025-10.r1" }),
+          instance("db-8", { Engine: "sqlserver-se", EngineVersion: "15.00.4430.1.v1" }),
+        ],
+      },
+      // The retired engine of Aurora MySQL 1, which awol does not read,
+      // counts as no service.
+      clusters: { "eu-west-1": [...CLUSTERS, cluster("cluster-2", { DBClusterIdentifier: "cluster-6", Engine: "aurora", EngineVersion: "5.6.10a" })] },
+      replicationGroups: { "eu-west-1": REPLICATION_GROUPS },
+      cacheClusters: { "eu-west-1": CACHE_CLUSTERS },
+      serverlessCaches: { "eu-west-1": SERVERLESS_CACHES },
+      unmonitored: { "eu-west-1": UNMONITORED },
+    });
+
+    await awol(aws).discover();
+
+    const { services } = await discovery(aws);
+    expect(services.map(({ service, supported, count }) => ({ service, supported, count }))).toEqual([
+      { service: "RDS", supported: true, count: 2 },
+      { service: "Aurora", supported: true, count: 2 },
+      { service: "ElastiCache Redis OSS", supported: true, count: 6 },
+      { service: "OpenSearch Service", supported: true, count: 0 },
+      { service: "Lambda", supported: true, count: 0 },
+      { service: "EKS", supported: false, count: 2 },
+      { service: "MSK", supported: false, count: 1 },
+      { service: "DocumentDB", supported: false, count: 1 },
+      { service: "Neptune", supported: false, count: 1 },
+      { service: "Amazon MQ", supported: false, count: 1 },
+      { service: "ElastiCache Valkey", supported: false, count: 2 },
+      { service: "ElastiCache Memcached", supported: false, count: 1 },
+      { service: "MemoryDB", supported: false, count: 1 },
+      { service: "Elastic Beanstalk", supported: false, count: 2 },
+      { service: "RDS Oracle", supported: false, count: 1 },
+      { service: "RDS SQL Server", supported: false, count: 1 },
+      { service: "EC2", supported: false, count: 2 },
+    ]);
+    expect(services.find(({ service }) => service === "ElastiCache Redis OSS")!.versions).toEqual([
+      { product: "ElastiCache Redis OSS", version: "5.0.6", count: 2 },
+      { product: "ElastiCache Redis OSS", version: "6.2.6", count: 1 },
+      { product: "ElastiCache Redis OSS", version: "7.0.7", count: 1 },
+      { product: "ElastiCache Redis OSS", version: "7.1", count: 1 },
+      { product: "ElastiCache Redis OSS", version: "7.1.0", count: 1 },
+    ]);
+    for (const { service, supported, versions } of services) {
+      if (!supported) expect(versions, service).toEqual([]);
+    }
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows a service with no endpoint in a region as not in that region, not as a part that failed", async () => {
+    const aws = fakeAws({
+      ...accountAnswers(),
+      [unmonitoredIn("sa-east-1", "memorydb describe-clusters")]: {
+        stderr: awsErrors.notAvailable.replace("rds.eu-west-1", "memory-db.sa-east-1"),
+      },
+    });
+
+    await awol(aws).discover();
+
+    const result = await discovery(aws);
+    expect(result.failedParts).toEqual([]);
+    expect(result.services.find(({ service }) => service === "MemoryDB")).toMatchObject({ count: 0, notInRegions: ["sa-east-1"] });
+    expect(result.services.find(({ service }) => service === "EKS")).toMatchObject({ count: 0, notInRegions: [] });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("records a part that fails with its error and reads the rest", async () => {
+    const aws = fakeAws({
+      ...accountAnswers({
+        clusters: { "eu-west-1": [cluster("cluster-1")] },
+        functions: { "us-east-1": [{ latest: lambdaFunction("function-6") }] },
+        unmonitored: { "eu-west-1": UNMONITORED },
+      }),
+      [describeDbInstancesIn("eu-west-1")]: { stderr: awsErrors.accessDenied },
+      [listAliasesIn("us-east-1", "function-6")]: { stderr: awsErrors.throttling },
+    });
+
+    expect(await awol(aws).discover()).toEqual({ kind: "discovered" });
+
+    const result = await discovery(aws);
+    expect(result.finishedAt).toBe("2026-11-03T12:00:00.000Z");
+    expect(result.failedParts).toEqual([
+      { part: { kind: "presence", awsService: "RDS", region: "eu-west-1" }, error: awsErrors.accessDenied.trim() },
+      { part: { kind: "versions", service: "Lambda", region: "us-east-1" }, error: awsErrors.throttling.trim() },
+    ]);
+    expect(found(result)).toEqual([
+      { service: "Lambda", count: 1, regions: [{ region: "us-east-1", count: 1 }] },
+      { service: "EKS", count: 2, regions: [{ region: "eu-west-1", count: 2 }] },
+      { service: "MSK", count: 1, regions: [{ region: "eu-west-1", count: 1 }] },
+      { service: "Amazon MQ", count: 1, regions: [{ region: "eu-west-1", count: 1 }] },
+      { service: "MemoryDB", count: 1, regions: [{ region: "eu-west-1", count: 1 }] },
+      { service: "Elastic Beanstalk", count: 2, regions: [{ region: "eu-west-1", count: 2 }] },
+      { service: "EC2", count: 2, regions: [{ region: "eu-west-1", count: 2 }] },
+    ]);
+    expect(result.services.find(({ service }) => service === "Lambda")!.versions).toEqual([]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("keeps a part's previous result when it fails on the next Discovery, Stale since its last successful read", async () => {
+    const before = account({ unmonitored: { "eu-west-1": UNMONITORED } });
+    await awol(before, NOW).discover();
+    // db-1 has gone and an EKS cluster has been added, but RDS fails in
+    // eu-west-1, for its resources and their versions alike.
+    const after = fakeAws({
+      ...accountAnswers({
+        instances: { "eu-west-1": describeDbInstances.DBInstances.slice(1) },
+        unmonitored: { "eu-west-1": { ...UNMONITORED, "eks list-clusters": { clusters: ["eks-1", "eks-2", "eks-3"] } } },
+      }),
+      [describeDbClustersIn("eu-west-1")]: { stderr: awsErrors.throttling },
+    });
+
+    await awol(after, LATER).discover();
+
+    const result = await discovery(after, LATER);
+    expect(result.failedParts).toEqual([
+      {
+        part: { kind: "presence", awsService: "RDS", region: "eu-west-1" },
+        error: awsErrors.throttling.trim(),
+        lastReadAt: "2026-11-03T12:00:00.000Z",
+      },
+      {
+        part: { kind: "versions", service: "RDS", region: "eu-west-1" },
+        error: awsErrors.throttling.trim(),
+        lastReadAt: "2026-11-03T12:00:00.000Z",
+      },
+    ]);
+    expect(result.services.find(({ service }) => service === "RDS")!.versions).toHaveLength(5);
+    expect(found(result).slice(0, 2)).toEqual([
+      { service: "RDS", count: 5, regions: [{ region: "eu-west-1", count: 5, stale: { lastReadAt: "2026-11-03T12:00:00.000Z" } }] },
+      { service: "EKS", count: 3, regions: [{ region: "eu-west-1", count: 3 }] },
+    ]);
+    expectOnlyJsonReads(before);
+    expectOnlyJsonReads(after);
+  });
+
+  it("re-reads only the failed or Stale parts when asked to, keeping every other part as it was", async () => {
+    const THEN = new Date("2026-11-05T09:00:00Z");
+    const notInRegion = { stderr: awsErrors.notAvailable.replace("rds.eu-west-1", "memory-db.sa-east-1") };
+    // Lambda can never be read in eu-west-2, and MemoryDB has no endpoint in
+    // sa-east-1.
+    const first = fakeAws({
+      ...accountAnswers(),
+      [listFunctionsIn("eu-west-2")]: { stderr: awsErrors.accessDenied },
+      [unmonitoredIn("sa-east-1", "memorydb describe-clusters")]: notInRegion,
+    });
+    await awol(first, NOW).discover();
+    // RDS fails in eu-west-1 too, so is Stale there.
+    const second = fakeAws({
+      ...accountAnswers(),
+      [listFunctionsIn("eu-west-2")]: { stderr: awsErrors.accessDenied },
+      [unmonitoredIn("sa-east-1", "memorydb describe-clusters")]: notInRegion,
+      [describeDbInstancesIn("eu-west-1")]: { stderr: awsErrors.throttling },
+    });
+    await awol(second, LATER).discover();
+    expect((await discovery(second, LATER)).failedParts.map(({ part }) => part)).toEqual([
+      { kind: "presence", awsService: "RDS", region: "eu-west-1" },
+      { kind: "presence", awsService: "Lambda", region: "eu-west-2" },
+      { kind: "versions", service: "RDS", region: "eu-west-1" },
+    ]);
+    const third = fakeAws({
+      ...accountAnswers({ functions: { "eu-west-2": [{ latest: lambdaFunction("function-6") }] } }),
+      [unmonitoredIn("sa-east-1", "memorydb describe-clusters")]: notInRegion,
+    });
+
+    expect(await awol(third, THEN).discover({ scope: "failed" })).toEqual({ kind: "discovered" });
+
+    expect(third.calls.map((argv) => argv.join(" ")).sort()).toEqual(
+      [
+        CALLER_IDENTITY,
+        describeDbInstancesIn("eu-west-1"),
+        describeDbClustersIn("eu-west-1"),
+        describeDbInstancesIn("eu-west-1"),
+        describeDbClustersIn("eu-west-1"),
+        listFunctionsIn("eu-west-2"),
+        listFunctionsIn("eu-west-2"),
+        listAliasesIn("eu-west-2", "function-6"),
+      ].sort(),
+    );
+    const result = await discovery(third, THEN);
+    expect(result).toMatchObject({ startedAt: "2026-11-05T09:00:00.000Z", finishedAt: "2026-11-05T09:00:00.000Z", failedParts: [] });
+    expect(found(result)).toEqual([
+      { service: "RDS", count: 5, regions: [{ region: "eu-west-1", count: 5 }] },
+      { service: "Lambda", count: 1, regions: [{ region: "eu-west-2", count: 1 }] },
+    ]);
+    expect(result.services.find(({ service }) => service === "MemoryDB")!.notInRegions).toEqual(["sa-east-1"]);
+    expectOnlyJsonReads(first);
+    expectOnlyJsonReads(second);
+    expectOnlyJsonReads(third);
+  });
+
+  it("reads every part again on a full Discovery", async () => {
+    const before = account();
+    await awol(before, NOW).discover();
+    const after = account();
+
+    await awol(after, LATER).discover({ scope: "all" });
+
+    expect(after.calls.filter(([, subcommand]) => subcommand === "list-regions")).toHaveLength(1);
+    expect(regionsCalled(after, "eks list-clusters")).toEqual(ENABLED_REGIONS);
+    // Once for RDS's resources there, and once for their versions.
+    expect(after.calls.filter((argv) => argv.join(" ") === describeDbInstancesIn("eu-west-1"))).toHaveLength(2);
+    expect(await discovery(after, LATER)).toMatchObject({ startedAt: "2026-11-04T08:30:00.000Z", failedParts: [] });
+    expectOnlyJsonReads(before);
+    expectOnlyJsonReads(after);
+  });
+
+  it("re-reads a region's versions with its re-read failed or Stale part, so the two never disagree", async () => {
+    const THEN = new Date("2026-11-05T09:00:00Z");
+    const before = account();
+    await awol(before, NOW).discover();
+    // db-1 has gone. RDS fails once in eu-west-1, counting its resources,
+    // then answers when its versions are read.
+    const recorded = account({ instances: { "eu-west-1": describeDbInstances.DBInstances.slice(1) } });
+    let failed = false;
+    const once = Object.assign(
+      async (argv: string[]) => {
+        if (failed || argv.join(" ") !== describeDbInstancesIn("eu-west-1")) return recorded(argv);
+        failed = true;
+        recorded.calls.push(argv);
+        throw awsCliError(argv, awsErrors.throttling);
+      },
+      { calls: recorded.calls },
+    );
+    await awol(once, LATER).discover();
+    const rds = (result: DiscoveryResult) => result.services.find(({ service }) => service === "RDS")!;
+    expect(rds(await discovery(once, LATER))).toMatchObject({ count: 5, versions: { length: 4 } });
+    // db-2 has gone too.
+    const after = account({ instances: { "eu-west-1": describeDbInstances.DBInstances.slice(2) } });
+
+    await awol(after, THEN).discover({ scope: "failed" });
+
+    const result = await discovery(after, THEN);
+    expect(result.failedParts).toEqual([]);
+    expect(rds(result).count).toBe(3);
+    expect(rds(result).versions).toEqual([
+      { product: "RDS PostgreSQL", version: "14.22", count: 1 },
+      { product: "RDS PostgreSQL", version: "16.13", count: 1 },
+      { product: "RDS PostgreSQL", version: "17.9", count: 1 },
+    ]);
+    expectOnlyJsonReads(before);
+    expectOnlyJsonReads(once);
+    expectOnlyJsonReads(after);
+  });
+
+  it("tells of each part as soon as it is kept, as the dashboard would show the Discovery then", async () => {
+    const aws = account({ unmonitored: { "us-east-1": UNMONITORED } });
+    const updates: DiscoveryResult[] = [];
+
+    await awol(aws).discover({ onPart: (result) => updates.push(result) });
+
+    const rds = (result: DiscoveryResult) => result.services.find(({ service }) => service === "RDS")!;
+    expect(updates[0]).toMatchObject({ startedAt: "2026-11-03T12:00:00.000Z", regions: [], failedParts: [] });
+    expect(updates[0]!.services.every(({ count }) => count === 0)).toBe(true);
+    expect(updates.slice(0, -1).every(({ finishedAt }) => finishedAt === undefined)).toBe(true);
+    expect(updates.some((result) => result.regions.length === ENABLED_REGIONS.length && rds(result).count === 0)).toBe(true);
+    expect(updates.some((result) => rds(result).count === 5 && rds(result).versions.length === 0)).toBe(true);
+    expect(updates.at(-1)).toEqual(await discovery(aws));
+    expect(updates.at(-1)!.finishedAt).toBe("2026-11-03T12:00:00.000Z");
+    expectOnlyJsonReads(aws);
+  });
+
+  it("asks to log in again when credentials expire part-way through, leaving the last Discovery as it was", async () => {
+    const before = account();
+    await awol(before, NOW).discover();
+    const kept = await discovery(before);
+    const after = fakeAws({
+      ...accountAnswers({ unmonitored: { "us-east-1": UNMONITORED } }),
+      [describeDbInstancesIn("eu-west-1")]: { stderr: credentialErrors.expiredToken },
+    });
+
+    expect(await awol(after, LATER).discover()).toEqual({ kind: "login-needed", reason: credentialErrors.expiredToken.trim() });
+
+    expect(await discovery(before)).toEqual(kept);
+    expectOnlyJsonReads(before);
+    expectOnlyJsonReads(after);
   });
 });

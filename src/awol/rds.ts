@@ -1,5 +1,5 @@
 import type { AwsRunner } from "../aws/runner.ts";
-import type { ComponentReading, ExtendedSupport, Product, SupportDates } from "./component.ts";
+import type { ComponentReading, ComponentVersion, ExtendedSupport, Product, SupportDates } from "./component.ts";
 import { highestVersion } from "./drift.ts";
 
 // A Product awol reads from RDS, with the AWS major version a version is in,
@@ -110,15 +110,13 @@ type DbInstance = Omit<DbComponent, "identifier"> & { DBInstanceIdentifier: stri
 
 type DbCluster = Omit<DbComponent, "identifier"> & { DBClusterIdentifier: string };
 
-// The RDS instances and DB clusters in `region` that are Components, each
-// with AWS's support dates for its AWS major version there and the Newest
-// offered version of its Product there. An instance in a DB cluster is not a
-// Component: its cluster is.
-export async function readRdsComponents(aws: AwsRunner, region: string): Promise<ComponentReading[]> {
+// The RDS instances and DB clusters in `region` that are Components. An
+// instance in a DB cluster is not a Component: its cluster is.
+async function listDbComponents(aws: AwsRunner, region: string): Promise<DbComponent[]> {
   // One call at a time, so a region makes one call at once.
   const instancesStdout = await aws(["rds", "describe-db-instances", "--region", region, "--output", "json"]);
   const clustersStdout = await aws(["rds", "describe-db-clusters", "--region", region, "--output", "json"]);
-  const components: DbComponent[] = [
+  return [
     ...(JSON.parse(instancesStdout) as { DBInstances: DbInstance[] }).DBInstances.filter(
       (instance) => instance.DBClusterIdentifier === undefined,
     ).map((instance) => ({ ...instance, identifier: instance.DBInstanceIdentifier })),
@@ -127,6 +125,23 @@ export async function readRdsComponents(aws: AwsRunner, region: string): Promise
       identifier: cluster.DBClusterIdentifier,
     })),
   ].filter((component) => PRODUCTS[component.Engine] !== undefined);
+}
+
+// The RDS Components in `region`, each with its version only.
+export async function readRdsVersions(aws: AwsRunner, region: string): Promise<ComponentVersion[]> {
+  return (await listDbComponents(aws, region)).map((component) => ({
+    service: "RDS",
+    product: PRODUCTS[component.Engine]!,
+    region,
+    identifier: component.identifier,
+    version: component.EngineVersion,
+  }));
+}
+
+// The RDS Components in `region`, each with AWS's support dates for its AWS
+// major version there and the Newest offered version of its Product there.
+export async function readRdsComponents(aws: AwsRunner, region: string): Promise<ComponentReading[]> {
+  const components = await listDbComponents(aws, region);
 
   const lifecyclesByEngine = new Map<string, Map<string, SupportDates>>();
   const newestOfferedByEngine = new Map<string, string | undefined>();

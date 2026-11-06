@@ -1,0 +1,18 @@
+{
+  "Environments": [
+    {
+      "EnvironmentName": "environment-1",
+      "ApplicationName": "application-1",
+      "SolutionStackName": "64bit Amazon Linux 2023 v6.6.0 running Node.js 22",
+      "Status": "Ready",
+      "Health": "Green"
+    },
+    {
+      "EnvironmentName": "environment-2",
+      "ApplicationName": "application-1",
+      "SolutionStackName": "64bit Amazon Linux 2023 v4.7.0 running Python 3.11",
+      "Status": "Ready",
+      "Health": "Green"
+    }
+  ]
+}

@@ -2,7 +2,8 @@ import { History, KeyRound } from "lucide-react";
 import { connection } from "next/server";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import type { FailedPart, LastScan, ScanPart } from "../awol/page-model.ts";
-import { appAwol } from "./app-awol.ts";
+import { appAwol, discoveryRunning } from "./app-awol.ts";
+import { DiscoverySection } from "./discovery-section.tsx";
 import { formatTime } from "./format.ts";
 import { ScanButton } from "./scan-button.tsx";
 import { ScanTable } from "./scan-table.tsx";
@@ -40,6 +41,7 @@ export default async function DashboardPage() {
         </p>
         <ScanButton />
       </div>
+      <DiscoverySection discovery={model.discovery} running={discoveryRunning()} />
       {model.lastScan !== undefined && <ScanResult scan={model.lastScan} />}
     </div>
   );

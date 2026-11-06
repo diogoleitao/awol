@@ -7,8 +7,8 @@ import { promisify } from "node:util";
 export type AwsRunner = (argv: string[]) => Promise<string>;
 
 // Why an `aws` call failed: credentials that have expired or need an SSO
-// login, or anything else.
-export type AwsErrorKind = "expired-credentials" | "failed";
+// login, a service with no endpoint in the region, or anything else.
+export type AwsErrorKind = "expired-credentials" | "not-available" | "failed";
 
 export class AwsCliError extends Error {
   constructor(
@@ -26,6 +26,8 @@ const KINDS: [AwsErrorKind, RegExp][] = [
     "expired-credentials",
     /\((ExpiredToken|ExpiredTokenException)\)|Error when retrieving token from sso|SSO session associated with this profile has expired|Error loading SSO Token/,
   ],
+  // AWS publishes no endpoint for a service in a region it does not run in.
+  ["not-available", /Could not connect to the endpoint URL/],
 ];
 
 // The error for an `aws` call that failed with `stderr`.

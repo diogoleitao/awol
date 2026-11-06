@@ -1,0 +1,13 @@
+{
+  "ClusterInfoList": [
+    {
+      "ClusterName": "kafka-1",
+      "ClusterType": "PROVISIONED",
+      "State": "ACTIVE",
+      "Provisioned": {
+        "CurrentBrokerSoftwareInfo": { "KafkaVersion": "3.6.0" },
+        "NumberOfBrokerNodes": 3
+      }
+    }
+  ]
+}

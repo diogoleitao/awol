@@ -1,0 +1,11 @@
+{
+  "BrokerSummaries": [
+    {
+      "BrokerName": "broker-1",
+      "BrokerState": "RUNNING",
+      "DeploymentMode": "SINGLE_INSTANCE",
+      "EngineType": "ACTIVEMQ",
+      "HostInstanceType": "mq.t3.micro"
+    }
+  ]
+}

@@ -8,8 +8,8 @@ import { LAMBDA_PRODUCT, readLambdaComponents } from "./lambda.ts";
 import { OPENSEARCH_PRODUCTS, readOpenSearchComponents } from "./opensearch.ts";
 import { RDS_PRODUCTS, readRdsComponents } from "./rds.ts";
 
-// How many regions a Scan reads at once.
-const REGION_CONCURRENCY = 8;
+// How many regions a Scan or Discovery reads at once.
+export const REGION_CONCURRENCY = 8;
 
 // The services a Scan reads in each region, in the order it reads them.
 const SERVICES: [Service, (aws: AwsRunner, region: string) => Promise<ComponentReading[]>][] = [
@@ -116,10 +116,10 @@ export async function runScan(
   return { ranAt: readAt, regions, services, products };
 }
 
-// Reads one part, keeping the result of `last`, its previous read, if the
-// read fails. Credentials that have expired or need an SSO login fail the
-// whole Scan.
-async function readPart<T>(read: () => Promise<T>, readAt: string, last: PartRead<T> | undefined): Promise<PartRead<T>> {
+// Reads one part of a Scan or Discovery, keeping the result of `last`, its
+// previous read, if the read fails. Credentials that have expired or need an
+// SSO login fail the whole Scan or Discovery.
+export async function readPart<T>(read: () => Promise<T>, readAt: string, last: PartRead<T> | undefined): Promise<PartRead<T>> {
   try {
     return { result: await read(), readAt };
   } catch (error) {
@@ -192,7 +192,7 @@ function matchedComponent(
 
 // The regions from `account list-regions` with status ENABLED or
 // ENABLED_BY_DEFAULT.
-async function enabledRegions(aws: AwsRunner): Promise<string[]> {
+export async function enabledRegions(aws: AwsRunner): Promise<string[]> {
   const stdout = await aws(["account", "list-regions", "--output", "json"]);
   const { Regions } = JSON.parse(stdout) as { Regions: { RegionName: string; RegionOptStatus: string }[] };
   return Regions.filter(({ RegionOptStatus }) => RegionOptStatus === "ENABLED" || RegionOptStatus === "ENABLED_BY_DEFAULT").map(
@@ -202,7 +202,7 @@ async function enabledRegions(aws: AwsRunner): Promise<string[]> {
 
 // Maps `items` with `map`, running at most `limit` at once, keeping their
 // order.
-async function mapConcurrently<T, R>(items: T[], limit: number, map: (item: T) => Promise<R>): Promise<R[]> {
+export async function mapConcurrently<T, R>(items: T[], limit: number, map: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let next = 0;
   async function worker() {

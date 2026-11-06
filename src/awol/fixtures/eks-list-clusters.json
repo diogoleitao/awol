@@ -1,0 +1,3 @@
+{
+  "clusters": ["eks-1", "eks-2"]
+}
