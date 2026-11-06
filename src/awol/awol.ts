@@ -1,13 +1,17 @@
 import { readOnly } from "../aws/read-only.ts";
 import { AwsCliError, type AwsRunner } from "../aws/runner.ts";
+import { Cancelled as CancelledError, type Running, type Starter } from "../data/run-lock.ts";
 import { openStore } from "../data/store.ts";
 import type { EndOfLifeFetcher } from "../endoflife/fetcher.ts";
 import { openReleaseCycles } from "../endoflife/release-cycles.ts";
 import { SUPPORTED_SERVICES, type SupportedService } from "./component.ts";
 import { countSupportedIn, type Discovery, type DiscoveryScope, discoveryResultOf, runDiscovery } from "./discovery.ts";
 import type { ComponentDrift, ComponentRow, DiscoveryResult, LastScan, PageModel, SupportDates } from "./page-model.ts";
+import type { Part, Progress, Step } from "./progress.ts";
 import { componentsOf, failedPartsOf, runScan, type Scan, unmonitoredServicesOf } from "./scan.ts";
 import { countsOf, STATUSES, statusOf } from "./status.ts";
+
+export type { Part, Progress, Step };
 
 export type Clock = { now(): Date };
 
@@ -23,23 +27,58 @@ export type AwolOptions = {
 // need an SSO login: the `aws` CLI's reason.
 type LoginNeeded = { kind: "login-needed"; reason: string };
 
-// What a Scan ends in: read, not read because no Monitored services have been
-// chosen yet, or the CLI's reason to log in again.
-export type ScanOutcome = { kind: "scanned" } | { kind: "monitored-services-needed" } | LoginNeeded;
+// What a Scan or Discovery ends in when another of the same account is
+// running: the account, the one running, and the process running it.
+export type Busy = { kind: "busy"; accountId: string; running: Running; pid: number };
 
-export type DiscoveryOutcome = { kind: "discovered" } | LoginNeeded;
+// What a Scan or Discovery ends in when it is cancelled on request part-way,
+// leaving the last one as it was.
+type Cancelled = { kind: "cancelled" };
+
+// What a Scan ends in: read, as the dashboard then shows the last Scan, not
+// read because no Monitored services have been chosen yet or another Scan
+// or Discovery is running, cancelled, or the CLI's reason to log in again.
+export type ScanOutcome = { kind: "scanned"; lastScan: LastScan } | { kind: "monitored-services-needed" } | Busy | Cancelled | LoginNeeded;
+
+// What a Discovery ends in: read, as the dashboard then shows it, not read
+// because another Scan or Discovery is running, cancelled, or the CLI's
+// reason to log in again.
+export type DiscoveryOutcome = { kind: "discovered"; discovery: DiscoveryResult } | Busy | Cancelled | LoginNeeded;
 
 // What choosing Monitored services ends in: kept, or the CLI's reason to log
 // in again, leaving them as they were.
 export type SetMonitoredServicesOutcome = { kind: "saved" } | LoginNeeded;
 
-// What to read in a Discovery, and what to tell the Discovery, as the
-// dashboard would show it, each time it keeps a part.
-export type DiscoverOptions = { scope?: DiscoveryScope; onPart?: (discovery: DiscoveryResult) => void };
+// What to read in a Discovery, what to tell the Discovery, as the dashboard
+// would show it, each time it keeps a part, what to tell of its progress,
+// what started it, the dashboard unless given, and the process whose
+// account lock to take over, known not to run a Scan or Discovery any more.
+export type DiscoverOptions = {
+  scope?: DiscoveryScope;
+  onPart?: (discovery: DiscoveryResult) => void;
+  onProgress?: (progress: Progress) => void;
+  startedBy?: Starter;
+  takeOver?: number;
+};
+
+// What to tell of a Scan's progress, whether to read every supported
+// service, instead of nothing, while no Monitored services are chosen, what
+// started it, the dashboard unless given, and the process whose account lock
+// to take over, known not to run a Scan or Discovery any more.
+export type ScanOptions = {
+  onProgress?: (progress: Progress) => void;
+  readEverySupportedService?: boolean;
+  startedBy?: Starter;
+  takeOver?: number;
+};
 
 // What to tell the Discovery awol starts with, if it starts with one: that
 // it starts, and each part it keeps.
 export type StartOptions = { onDiscovery?: () => void; onPart?: (discovery: DiscoveryResult) => void };
+
+// awol on one data directory, reading AWS and endoflife.date: what the
+// dashboard and the CLI both run.
+export type Awol = ReturnType<typeof openAwol>;
 
 export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions) {
   // Every AWS call awol makes goes through here (ADR 0002).
@@ -74,42 +113,90 @@ export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions
     }
   }
 
-  // Runs a Discovery of the account `accountId`, as `discover` does.
-  async function discoverAccount(accountId: string, { scope = "all", onPart }: DiscoverOptions): Promise<{ kind: "discovered" }> {
+  // Runs `run`, a Scan or Discovery of the account `accountId` started by
+  // `startedBy`, holding the account's lock, unless another is running, one
+  // held by `takeOver` aside. `run` checks with `stopIfCancelled` before each
+  // part whether it has been asked to stop.
+  async function exclusively<T>(
+    accountId: string,
+    operation: Running["operation"],
+    { startedBy, takeOver }: { startedBy: Starter; takeOver?: number },
+    run: (stopIfCancelled: () => Promise<void>) => Promise<T>,
+  ): Promise<T | Busy | Cancelled> {
+    const taken = await store.account(accountId).lock.take({ operation, startedBy, startedAt: clock.now().toISOString() }, takeOver);
+    if (taken.kind === "busy") return { kind: "busy", accountId, running: taken.running, pid: taken.pid };
+    try {
+      return await run(taken.stopIfCancelled);
+    } catch (error) {
+      if (error instanceof CancelledError) return { kind: "cancelled" };
+      throw error;
+    } finally {
+      await taken.release();
+    }
+  }
+
+  // Runs a Discovery of the account `accountId`, as `discover` does, once
+  // it holds the account's lock.
+  async function discoverAccount(
+    accountId: string,
+    { scope = "all", onPart, onProgress }: DiscoverOptions,
+    stopIfCancelled: () => Promise<void>,
+  ): Promise<DiscoveryOutcome & { kind: "discovered" }> {
     const account = store.account(accountId);
     const { discovery: previous } = await account.load();
     const save = (discovery: Discovery | undefined) => account.update((state) => ({ ...state, discovery }));
+    let last = previous;
     try {
-      await runDiscovery(aws, () => clock.now(), previous, scope, async (discovery) => {
-        await save(discovery);
-        onPart?.(discoveryResultOf(discovery));
-      });
+      await runDiscovery(
+        aws,
+        () => clock.now(),
+        previous,
+        scope,
+        async (discovery) => {
+          last = discovery;
+          await save(discovery);
+          onPart?.(discoveryResultOf(discovery));
+        },
+        onProgress,
+        stopIfCancelled,
+      );
     } catch (error) {
       await save(previous);
       throw error;
     }
-    return { kind: "discovered" };
+    return { kind: "discovered", discovery: discoveryResultOf(last!) };
   }
 
   // Runs a Scan of the account `accountId`, as `scan` does.
-  async function scanAccount(accountId: string): Promise<ScanOutcome> {
-    const { monitoredServices, lastScan } = await store.account(accountId).load();
-    if (monitoredServices === undefined) return { kind: "monitored-services-needed" };
-    const scan = await runScan(aws, releaseCycles, countSupportedIn, clock.now(), lastScan, monitoredServices);
-    await store.account(accountId).update((state) => ({ ...state, lastScan: scan }));
-    return { kind: "scanned" };
+  async function scanAccount(
+    accountId: string,
+    { onProgress, readEverySupportedService, startedBy = "the dashboard", takeOver }: ScanOptions = {},
+  ): Promise<ScanOutcome> {
+    const { monitoredServices } = await store.account(accountId).load();
+    if (monitoredServices === undefined && !readEverySupportedService) return { kind: "monitored-services-needed" };
+    const monitored = monitoredServices ?? [...SUPPORTED_SERVICES];
+    return exclusively(accountId, "Scan", { startedBy, takeOver }, async (stopIfCancelled) => {
+      // Read once the lock is held, so no Scan that ended meanwhile is lost.
+      const { lastScan } = await store.account(accountId).load();
+      const scan = await runScan(aws, releaseCycles, countSupportedIn, clock.now(), lastScan, monitored, onProgress, stopIfCancelled);
+      await store.account(accountId).update((state) => ({ ...state, lastScan: scan }));
+      return { kind: "scanned", lastScan: lastScanOf(scan, monitored, clock.now()) } as const;
+    });
   }
 
   return {
     // What awol does when it starts: a Discovery of an account it has never
-    // discovered, telling `onDiscovery` first, or else a Scan.
+    // discovered, telling `onDiscovery` first, or else a Scan, unless another
+    // Scan or Discovery of the account is running.
     start({ onDiscovery, onPart }: StartOptions = {}): Promise<DiscoveryOutcome | ScanOutcome> {
       return orLoginNeeded(async () => {
         const accountId = await identify();
         const { discovery } = await store.account(accountId).load();
-        if (discovery !== undefined) return scanAccount(accountId);
-        onDiscovery?.();
-        return discoverAccount(accountId, { onPart });
+        if (discovery !== undefined) return scanAccount(accountId, { startedBy: "the server on start" });
+        return exclusively(accountId, "Discovery", { startedBy: "the server on start" }, (stopIfCancelled) => {
+          onDiscovery?.();
+          return discoverAccount(accountId, { onPart }, stopIfCancelled);
+        });
       });
     },
 
@@ -117,9 +204,23 @@ export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions
     // part as the account's last Discovery as soon as it is read and telling
     // `onPart`. With scope "failed", reads only the parts the last Discovery
     // could not read. Credentials that expire part-way leave the last
-    // Discovery as it was.
+    // Discovery as it was. Nothing is read while another Scan or Discovery
+    // of the account is running.
     discover(options: DiscoverOptions = {}): Promise<DiscoveryOutcome> {
-      return orLoginNeeded(async () => discoverAccount(await identify(), options));
+      return orLoginNeeded(async () => {
+        const accountId = await identify();
+        const { startedBy = "the dashboard", takeOver } = options;
+        return exclusively(accountId, "Discovery", { startedBy, takeOver }, (stopIfCancelled) =>
+          discoverAccount(accountId, options, stopIfCancelled),
+        );
+      });
+    },
+
+    // Asks the Scan or Discovery `busy` names to stop at its next part, and
+    // waits up to `timeoutMs` for it to free the account. Gives whether it
+    // did. A cancelled Scan or Discovery leaves the last one as it was.
+    cancel({ accountId, running, pid }: Busy, timeoutMs: number): Promise<boolean> {
+      return store.account(accountId).lock.cancel(pid, running, timeoutMs);
     },
 
     // Keeps `services` as the account's Monitored services, in the order the
@@ -134,9 +235,12 @@ export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions
 
     // Reads every Component of the account's Monitored services and its
     // lifecycle data, and keeps them as the account's last Scan. Before any
-    // Monitored services are chosen it reads nothing.
-    scan(): Promise<ScanOutcome> {
-      return orLoginNeeded(async () => scanAccount(await identify()));
+    // Monitored services are chosen it reads nothing, or, when asked to,
+    // every supported service, leaving them unchosen. Nothing is read while
+    // another Scan or Discovery of the account is running. Its progress is
+    // told to `onProgress`.
+    scan(options: ScanOptions = {}): Promise<ScanOutcome> {
+      return orLoginNeeded(async () => scanAccount(await identify(), options));
     },
 
     // Credentials that have expired or need an SSO login make a page that
@@ -144,15 +248,17 @@ export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions
     pageModel(): Promise<PageModel> {
       return orLoginNeeded(async () => {
         const accountId = await identify();
-        const { discovery, monitoredServices, lastScan } = await store.account(accountId).load();
+        const account = store.account(accountId);
+        const { discovery, monitoredServices, lastScan } = await account.load();
         return {
           kind: "signed-in",
           accountId,
           discovery: discovery === undefined ? undefined : discoveryResultOf(discovery),
           monitoredServices,
-          // A Scan needs Monitored services, so one with none chosen is
-          // from before awol had them, and read every service.
+          // A Scan with no Monitored services chosen read every supported
+          // service: one asked to, or one from before awol had them.
           lastScan: lastScan === undefined ? undefined : lastScanOf(lastScan, monitoredServices ?? [...SUPPORTED_SERVICES], clock.now()),
+          running: await account.lock.running(),
         } as const;
       });
     },

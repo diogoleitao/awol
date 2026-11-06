@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { discover } from "./actions.ts";
 
 // Starts a Discovery of every part and, when the last one has failed or
-// Stale parts, of only those. Both wait while a Discovery runs.
+// Stale parts, of only those. Both wait while a Scan or Discovery runs.
 export function DiscoverButtons({ running, anyFailed }: { running: boolean; anyFailed: boolean }) {
   return (
     <div className="flex flex-wrap gap-2">

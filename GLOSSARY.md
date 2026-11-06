@@ -33,7 +33,7 @@ A service the user chose, from what Discovery found, for Scans to read.
 _Avoid_: Enabled service, tracked service
 
 **Scan**:
-One read of the Components of an AWS account's Monitored services and of their lifecycle data, kept with the time it ran. The dashboard always shows the last Scan.
+One read of the Components of an AWS account's Monitored services, or of every supported service before any are chosen, and of their lifecycle data, kept with the time it ran. The dashboard always shows the last Scan.
 _Avoid_: Refresh, sync, check
 
 **Stale**:

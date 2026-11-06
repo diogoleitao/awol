@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -5,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isReadOnly } from "../aws/read-only.ts";
 import { type AwsRunner, awsCliError } from "../aws/runner.ts";
 import type { EndOfLifeFetcher } from "../endoflife/fetcher.ts";
-import { openAwol } from "./awol.ts";
+import { openAwol, type Progress } from "./awol.ts";
 import { SUPPORTED_SERVICES } from "./component.ts";
 import { type DashboardView, dashboardViewOf, filterOptionsOf, INITIAL_TABLE_STATE, NO_FILTERS, nextSort } from "./dashboard-view.ts";
 import type { DiscoveryResult } from "./page-model.ts";
@@ -2750,7 +2751,7 @@ describe("Discovery", () => {
       functions: { "us-east-1": [{ latest: lambdaFunction("function-6") }, { latest: lambdaFunction("function-7") }] },
     });
 
-    expect(await awol(aws).discover()).toEqual({ kind: "discovered" });
+    expect(await awol(aws).discover()).toMatchObject({ kind: "discovered" });
 
     const result = await discovery(aws);
     expect(result).toMatchObject({
@@ -2931,7 +2932,7 @@ describe("Discovery", () => {
       [listAliasesIn("us-east-1", "function-6")]: { stderr: awsErrors.throttling },
     });
 
-    expect(await awol(aws).discover()).toEqual({ kind: "discovered" });
+    expect(await awol(aws).discover()).toMatchObject({ kind: "discovered" });
 
     const result = await discovery(aws);
     expect(result.finishedAt).toBe("2026-11-03T12:00:00.000Z");
@@ -3018,7 +3019,7 @@ describe("Discovery", () => {
       [unmonitoredIn("sa-east-1", "memorydb describe-clusters")]: notInRegion,
     });
 
-    expect(await awol(third, THEN).discover({ scope: "failed" })).toEqual({ kind: "discovered" });
+    expect(await awol(third, THEN).discover({ scope: "failed" })).toMatchObject({ kind: "discovered" });
 
     expect(third.calls.map((argv) => argv.join(" ")).sort()).toEqual(
       [
@@ -3143,7 +3144,7 @@ describe("Monitored services", () => {
   it("starts with Discovery instead of a Scan for an account awol has not seen, monitoring nothing yet", async () => {
     const aws = account({ functions: { "us-east-1": [{ latest: lambdaFunction("function-6") }] } });
 
-    expect(await awol(aws).start()).toEqual({ kind: "discovered" });
+    expect(await awol(aws).start()).toMatchObject({ kind: "discovered" });
 
     const model = await page(aws);
     expect(model.discovery).toMatchObject({ finishedAt: "2026-11-03T12:00:00.000Z", failedParts: [] });
@@ -3191,7 +3192,7 @@ describe("Monitored services", () => {
     await awol(aws).setMonitoredServices(["RDS"]);
     aws.calls.length = 0;
 
-    expect(await awol(aws).start()).toEqual({ kind: "scanned" });
+    expect(await awol(aws).start()).toMatchObject({ kind: "scanned" });
 
     const { lastScan } = await page(aws);
     expect(lastScan!.components.map(({ product, identifier }) => `${product} ${identifier}`).sort()).toEqual([
@@ -3286,6 +3287,42 @@ describe("Monitored services", () => {
     expectOnlyJsonReads(aws);
   });
 
+  it("can be left unchosen by a Scan of every supported service, shown whole, which ends in the last Scan as the dashboard shows it", async () => {
+    const aws = everyService();
+    await awol(aws).start();
+
+    const outcome = await awol(aws).scan({ readEverySupportedService: true });
+
+    const model = await page(aws);
+    expect(outcome).toEqual({ kind: "scanned", lastScan: model.lastScan });
+    expect(model.monitoredServices).toBeUndefined();
+    expect(model.lastScan!.components.map(({ product, identifier }) => `${product} ${identifier}`).sort()).toEqual([
+      "AWS Lambda function-6:$LATEST",
+      "Aurora PostgreSQL cluster-1",
+      "ElastiCache Redis OSS group-4",
+      "OpenSearch domain-1",
+      "RDS MySQL db-1",
+      "RDS PostgreSQL db-2",
+      "RDS PostgreSQL db-3",
+      "RDS PostgreSQL db-4",
+      "RDS PostgreSQL db-5",
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("limit a Scan asked to read every supported service once they are chosen", async () => {
+    const aws = everyService();
+    await awol(aws).start();
+    await awol(aws).setMonitoredServices(["Lambda"]);
+
+    await awol(aws).scan({ readEverySupportedService: true });
+
+    const model = await page(aws);
+    expect(model.monitoredServices).toEqual(["Lambda"]);
+    expect(model.lastScan!.components.map(({ identifier }) => identifier)).toEqual(["function-6:$LATEST"]);
+    expectOnlyJsonReads(aws);
+  });
+
   it("note each supported service a Scan finds resources of that is not monitored, never adding it", async () => {
     const aws = account({
       clusters: { "us-east-1": [cluster("cluster-1")] },
@@ -3377,13 +3414,13 @@ describe("Monitored services", () => {
       [CALLER_IDENTITY]: SIGNED_IN_ELSEWHERE,
     });
 
-    expect(await awol(second).start()).toEqual({ kind: "discovered" });
+    expect(await awol(second).start()).toMatchObject({ kind: "discovered" });
 
     const elsewhere = await page(second);
     expect(elsewhere).toMatchObject({ accountId: "210987654321", monitoredServices: undefined, lastScan: undefined });
     expect(elsewhere.discovery!.services.filter(({ count }) => count > 0).map(({ service }) => service)).toEqual(["Lambda"]);
     await awol(second).setMonitoredServices(["Lambda"]);
-    expect(await awol(second).start()).toEqual({ kind: "scanned" });
+    expect(await awol(second).start()).toMatchObject({ kind: "scanned" });
     expect((await page(second)).lastScan!.components.map(({ identifier }) => identifier)).toEqual(["function-6:$LATEST"]);
 
     expect(await page(first)).toEqual(kept);
@@ -3407,5 +3444,276 @@ describe("Monitored services", () => {
     expect((await page(aws)).monitoredServices).toEqual(["RDS"]);
     expectOnlyJsonReads(aws);
     expectOnlyJsonReads(expired);
+  });
+});
+
+describe("one Scan or Discovery of an account at a time", () => {
+  const STARTED_AT = "2026-11-03T12:00:00.000Z";
+
+  // The page on `now`, signed in.
+  async function page(aws: AwsRunner, now = NOW) {
+    const model = await awol(aws, now).pageModel();
+    if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+    return model;
+  }
+
+  // Settles once `condition` holds, checking it every 10ms.
+  async function until(condition: () => Promise<boolean>) {
+    while (!(await condition())) await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  // `aws`, holding every call for the account's regions until `release` is
+  // called; `reached` settles once one is held.
+  function held(aws: AwsRunner & { calls: string[][] }) {
+    let release!: () => void;
+    let reach!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const reached = new Promise<void>((resolve) => (reach = resolve));
+    const runner = async (argv: string[]) => {
+      if (argv.join(" ") === LIST_REGIONS) {
+        reach();
+        await gate;
+      }
+      return aws(argv);
+    };
+    return Object.assign(runner, { calls: aws.calls, release, reached });
+  }
+
+  it("refuses another, on request or on start, while one runs, saying which runs, since when and who started it", async () => {
+    const aws = account();
+    await awol(aws).setMonitoredServices(["RDS"]);
+    const holding = held(aws);
+    const scanning = awol(holding).scan({ startedBy: "awol scan" });
+    await holding.reached;
+    const running = { operation: "Scan", startedBy: "awol scan", startedAt: STARTED_AT };
+    const busy = { kind: "busy", accountId: "123456789012", running, pid: process.pid };
+
+    expect(await awol(aws).discover()).toEqual(busy);
+    expect(await awol(aws).scan()).toEqual(busy);
+    expect(await awol(aws).start()).toEqual(busy);
+    expect((await page(aws)).running).toEqual(running);
+
+    holding.release();
+    expect(await scanning).toMatchObject({ kind: "scanned" });
+    expect((await page(aws)).running).toBeUndefined();
+    expect(await awol(aws).discover({ startedBy: "awol discover" })).toMatchObject({ kind: "discovered" });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("runs one of each of two accounts at once", async () => {
+    const first = account();
+    await awol(first).setMonitoredServices(["RDS"]);
+    const holding = held(first);
+    const scanning = awol(holding).scan();
+    await holding.reached;
+    const second = fakeAws({ ...accountAnswers(), [CALLER_IDENTITY]: SIGNED_IN_ELSEWHERE });
+
+    expect(await awol(second).discover()).toMatchObject({ kind: "discovered" });
+
+    holding.release();
+    expect(await scanning).toMatchObject({ kind: "scanned" });
+    expectOnlyJsonReads(first);
+    expectOnlyJsonReads(second);
+  });
+
+  it("takes over from one whose process is gone, as after a crash", async () => {
+    const aws = account();
+    await awol(aws).setMonitoredServices(["RDS"]);
+    const gone = spawnSync(process.execPath, ["-e", ""]).pid;
+    await writeFile(
+      path.join(dir, "accounts", "123456789012", "running.json"),
+      JSON.stringify({ operation: "Discovery", startedBy: "awol discover", startedAt: STARTED_AT, pid: gone }),
+    );
+
+    expect((await page(aws)).running).toBeUndefined();
+    expect(await awol(aws).scan()).toMatchObject({ kind: "scanned" });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("takes over from one whose lock is corrupt, as after a crash part-way through writing it", async () => {
+    const aws = account();
+    await awol(aws).setMonitoredServices(["RDS"]);
+    await writeFile(path.join(dir, "accounts", "123456789012", "running.json"), '{"operation": "Sc');
+
+    expect((await page(aws)).running).toBeUndefined();
+    expect(await awol(aws).scan()).toMatchObject({ kind: "scanned" });
+    expect(await readdir(path.join(dir, "accounts", "123456789012"))).toEqual(["state.json"]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("cancels a Scan on request at its next part, keeping the last Scan, and frees the account", async () => {
+    const aws = account();
+    await awol(aws).setMonitoredServices(["RDS"]);
+    await awol(aws).scan();
+    const before = (await page(aws)).lastScan;
+    const holding = held(aws);
+    const scanning = awol(holding, new Date("2026-11-04T08:30:00Z")).scan();
+    await holding.reached;
+    const busy = await awol(aws).discover();
+    if (busy.kind !== "busy") throw new Error(`not busy: ${busy.kind}`);
+
+    const cancelling = awol(aws).cancel(busy, 5_000);
+    await until(() => readdir(path.join(dir, "accounts", "123456789012")).then((files) => files.includes("cancel.json")));
+    holding.release();
+
+    expect(await scanning).toEqual({ kind: "cancelled" });
+    expect(await cancelling).toBe(true);
+    expect((await page(aws)).lastScan).toEqual(before);
+    expect((await page(aws)).running).toBeUndefined();
+    expect(await readdir(path.join(dir, "accounts", "123456789012"))).toEqual(["state.json"]);
+    expect(await awol(aws).discover()).toMatchObject({ kind: "discovered" });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("cancels a Discovery on request, leaving the last Discovery as it was", async () => {
+    const aws = account();
+    await awol(aws).discover();
+    const before = (await page(aws)).discovery;
+    const holding = held(aws);
+    const discovering = awol(holding, new Date("2026-11-04T08:30:00Z")).discover();
+    await holding.reached;
+    const busy = await awol(aws).scan({ readEverySupportedService: true });
+    if (busy.kind !== "busy") throw new Error(`not busy: ${busy.kind}`);
+
+    const cancelling = awol(aws).cancel(busy, 5_000);
+    await until(() => readdir(path.join(dir, "accounts", "123456789012")).then((files) => files.includes("cancel.json")));
+    holding.release();
+
+    expect(await discovering).toEqual({ kind: "cancelled" });
+    expect(await cancelling).toBe(true);
+    expect((await page(aws)).discovery).toEqual(before);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("gives up cancelling one that does not stop in time, leaving no request behind", async () => {
+    const aws = account();
+    await awol(aws).setMonitoredServices(["RDS"]);
+    const holding = held(aws);
+    const scanning = awol(holding).scan();
+    await holding.reached;
+    const busy = await awol(aws).discover();
+    if (busy.kind !== "busy") throw new Error(`not busy: ${busy.kind}`);
+
+    expect(await awol(aws).cancel(busy, 200)).toBe(false);
+    expect(await readdir(path.join(dir, "accounts", "123456789012"))).not.toContain("cancel.json");
+
+    holding.release();
+    expect(await scanning).toMatchObject({ kind: "scanned" });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("lets the next one run after one ends asking to log in again", async () => {
+    const aws = account();
+    await awol(aws).setMonitoredServices(["RDS"]);
+    const expiring = fakeAws({ ...accountAnswers(), [LIST_REGIONS]: { stderr: credentialErrors.expiredToken } });
+
+    expect(await awol(expiring).scan()).toMatchObject({ kind: "login-needed" });
+    expect(await awol(expiring).discover()).toMatchObject({ kind: "login-needed" });
+
+    expect(await awol(aws).scan()).toMatchObject({ kind: "scanned" });
+    expectOnlyJsonReads(aws);
+    expectOnlyJsonReads(expiring);
+  });
+});
+
+describe("the progress of a Scan or Discovery", () => {
+  // What was told, apart from how many parts are done.
+  function told(progress: Progress[]) {
+    return progress.filter(({ kind }) => kind !== "parts");
+  }
+
+  // How many parts were done of those known, each time either changed.
+  function parts(progress: Progress[]) {
+    return progress.flatMap((told) => (told.kind === "parts" ? [{ done: told.done, total: told.total }] : []));
+  }
+
+  it("tells each step of a Scan once it is done in every region, each part that fails as it fails, and how many parts are done", async () => {
+    const aws = fakeAws({
+      ...accountAnswers({ functions: { "us-east-1": [{ latest: lambdaFunction("function-6") }] } }),
+      [describeDbInstancesIn("eu-west-1")]: { stderr: awsErrors.throttling },
+    });
+    await awol(aws).setMonitoredServices(["RDS", "Aurora", "Lambda"]);
+    const progress: Progress[] = [];
+
+    await awol(aws).scan({ onProgress: (told) => progress.push(told) });
+
+    expect(told(progress)).toEqual([
+      { kind: "step-done", step: { kind: "regions" } },
+      { kind: "failed", part: { kind: "service", service: "RDS", region: "eu-west-1" }, error: awsErrors.throttling.trim() },
+      { kind: "step-done", step: { kind: "scanned", service: "RDS" } },
+      { kind: "step-done", step: { kind: "scanned", service: "Lambda" } },
+      { kind: "step-done", step: { kind: "endoflife.date" } },
+    ]);
+    // The regions, then RDS and Lambda read and ElastiCache and OpenSearch
+    // counted in each of the 17 regions, then Lambda's one Product.
+    const counted = parts(progress);
+    expect(counted[0]).toEqual({ done: 0, total: 1 });
+    expect(counted.at(-1)).toEqual({ done: 70, total: 70 });
+    expect(counted.map(({ total }) => total)).toEqual(counted.map(({ total }) => total).sort((a, b) => a - b));
+    expectOnlyJsonReads(aws);
+  });
+
+  it("tells every step of a Scan, the Monitored services' and endoflife.date's, even one with no parts, as when it finds no Components", async () => {
+    const aws = account({ instances: {} });
+    await awol(aws).setMonitoredServices(["RDS"]);
+    const progress: Progress[] = [];
+
+    await awol(aws).scan({ onProgress: (told) => progress.push(told) });
+
+    expect(told(progress)).toEqual([
+      { kind: "step-done", step: { kind: "regions" } },
+      { kind: "step-done", step: { kind: "scanned", service: "RDS" } },
+      { kind: "step-done", step: { kind: "endoflife.date" } },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("tells each step of a Discovery once it is done in every region, each part that fails as it fails, and how many parts are done", async () => {
+    const aws = fakeAws({
+      ...accountAnswers({ functions: { "us-east-1": [{ latest: lambdaFunction("function-6") }] } }),
+      [listAliasesIn("us-east-1", "function-6")]: { stderr: awsErrors.throttling },
+    });
+    const progress: Progress[] = [];
+
+    await awol(aws).discover({ onProgress: (told) => progress.push(told) });
+
+    expect(told(progress).filter(({ kind }) => kind === "step-done")).toEqual([
+      { kind: "step-done", step: { kind: "regions" } },
+      ...["RDS", "ElastiCache", "OpenSearch", "Lambda", "EKS", "MSK", "Amazon MQ", "MemoryDB", "Elastic Beanstalk", "EC2"].map((awsService) => ({
+        kind: "step-done",
+        step: { kind: "counted", awsService },
+      })),
+      { kind: "step-done", step: { kind: "versions", service: "RDS" } },
+      { kind: "step-done", step: { kind: "versions", service: "Lambda" } },
+    ]);
+    expect(told(progress).filter(({ kind }) => kind === "failed")).toEqual([
+      { kind: "failed", part: { kind: "versions", service: "Lambda", region: "us-east-1" }, error: awsErrors.throttling.trim() },
+    ]);
+    // The regions, then 10 AWS services counted in each of the 17 regions,
+    // then RDS's versions in eu-west-1 and Lambda's in us-east-1.
+    const counted = parts(progress);
+    expect(counted[0]).toEqual({ done: 0, total: 1 });
+    expect(counted.at(-1)).toEqual({ done: 173, total: 173 });
+    expect(counted.map(({ total }) => total)).toEqual(counted.map(({ total }) => total).sort((a, b) => a - b));
+    expectOnlyJsonReads(aws);
+  });
+
+  it("tells the parts a Discovery of only the failed parts keeps as done, without reading them", async () => {
+    const before = fakeAws({ ...accountAnswers(), [describeDbInstancesIn("eu-west-1")]: { stderr: awsErrors.throttling } });
+    await awol(before).discover();
+    const aws = account();
+    const progress: Progress[] = [];
+
+    await awol(aws, new Date("2026-11-04T08:30:00Z")).discover({ scope: "failed", onProgress: (told) => progress.push(told) });
+
+    expect(told(progress).filter(({ kind }) => kind === "failed")).toEqual([]);
+    expect(told(progress).filter(({ kind }) => kind === "step-done")).toHaveLength(12);
+    // The regions and 10 AWS services in each of the 17 regions, kept but
+    // RDS in eu-west-1, and RDS's versions there, read again with it.
+    expect(parts(progress).at(-1)).toEqual({ done: 172, total: 172 });
+    expect(regionsCalled(aws, "rds describe-db-instances")).toEqual(["eu-west-1"]);
+    expect(regionsCalled(aws, "lambda list-functions")).toEqual([]);
+    expectOnlyJsonReads(before);
+    expectOnlyJsonReads(aws);
   });
 });

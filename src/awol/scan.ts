@@ -17,6 +17,7 @@ import { type Drift, driftFrom, driftFromCycle, newestCycleOf, withHighestLatest
 import { ELASTICACHE_PRODUCTS, readElastiCacheComponents } from "./elasticache.ts";
 import { LAMBDA_PRODUCT, readLambdaComponents } from "./lambda.ts";
 import { OPENSEARCH_PRODUCTS, readOpenSearchComponents } from "./opensearch.ts";
+import { failureOf, type Progress, progressOf, type Step } from "./progress.ts";
 import { RDS_PRODUCTS, readRdsComponents } from "./rds.ts";
 
 // How many regions a Scan or Discovery reads at once.
@@ -113,7 +114,12 @@ export type FailedPart = { part: ScanPart; error: string } & Partial<Stale>;
 // reading nothing more of them. The account's regions, or a service in a
 // region, that cannot be read keep their result from `previous`, the
 // account's last Scan; a product endoflife.date fails for keeps its last
-// answer.
+// answer. Its progress is told to `onProgress`: a Monitored service's step is
+// done once its Components are read in every region, and endoflife.date's
+// once every Product's Release Cycles are, each told even with nothing to
+// read; counting the resources of a service with nothing monitored is part
+// of no step. Before each part, `stopIfCancelled` throws if the Scan has been
+// asked to stop.
 export async function runScan(
   aws: AwsRunner,
   releaseCycles: (endOfLifeProduct: string, now: Date) => Promise<PartRead<ReleaseCycle[]>>,
@@ -121,10 +127,30 @@ export async function runScan(
   now: Date,
   previous: Scan | undefined,
   monitored: SupportedService[],
+  onProgress?: (progress: Progress) => void,
+  stopIfCancelled: () => Promise<void> = async () => {},
 ): Promise<Scan> {
+  const progress = progressOf(onProgress);
   const readAt = now.toISOString();
+  const REGIONS: Step = { kind: "regions" };
+  progress.found(1, REGIONS);
+  progress.close(REGIONS);
   const regions = await readPart(() => enabledRegions(aws), readAt, previous?.regions);
-  const byRegion = await mapConcurrently(resultOf(regions) ?? [], REGION_CONCURRENCY, async (region) => {
+  progress.done(REGIONS, failureOf({ kind: "regions" }, regions));
+
+  const enabled = resultOf(regions) ?? [];
+  // The step each service's parts count towards, if any.
+  const stepOf = (service: Service): Step | undefined =>
+    SUPPORTED_BY[service].some((supported) => monitored.includes(supported)) ? { kind: "scanned", service } : undefined;
+  for (const [service] of SERVICES) {
+    const supported = SUPPORTED_BY[service];
+    const perRegion = Number(supported.some((other) => !monitored.includes(other))) + Number(supported.some((other) => monitored.includes(other)));
+    const step = stepOf(service);
+    progress.found(perRegion * enabled.length, step);
+    if (step !== undefined) progress.close(step, { evenEmpty: true });
+  }
+
+  const byRegion = await mapConcurrently(enabled, REGION_CONCURRENCY, async (region) => {
     const services: ServicePart[] = [];
     const unmonitored: CountPart[] = [];
     const same = (part: { service: Service; region: string }, service: Service) => part.service === service && part.region === region;
@@ -132,6 +158,7 @@ export async function runScan(
     for (const [service, read] of SERVICES) {
       const supported = SUPPORTED_BY[service];
       if (supported.some((other) => !monitored.includes(other))) {
+        await stopIfCancelled();
         // Only the services not monitored are counted, Stale or not, so
         // none is counted again from the Components read.
         const notMonitored = (counts: SupportedCounts): SupportedCounts =>
@@ -139,15 +166,19 @@ export async function runScan(
         const last = withResult(previous?.unmonitored?.find((part) => same(part, service)), notMonitored);
         const counted = await readPart(async () => notMonitored(await countSupported(aws, service, region)), readAt, last);
         unmonitored.push({ service, region, ...counted });
+        progress.done(stepOf(service), failureOf({ kind: "unmonitored", service, region }, counted));
       }
       if (supported.some((other) => monitored.includes(other))) {
+        await stopIfCancelled();
         const wanted = (product: Product) => monitored.includes(supportedServiceOf(service, product.endOfLifeProduct));
         // A Stale result keeps none of the Components of a service no
         // longer monitored.
         const last = withResult(previous?.services?.find((part) => same(part, service)), (readings: StoredReading[]) =>
           readings.filter((reading) => monitored.includes(serviceOf(service, reading))),
         );
-        services.push({ service, region, ...(await readPart(async () => (await read(aws, region, wanted)).map(storedReading), readAt, last)) });
+        const components = await readPart(async () => (await read(aws, region, wanted)).map(storedReading), readAt, last);
+        services.push({ service, region, ...components });
+        progress.done(stepOf(service), failureOf({ kind: "service", service, region }, components));
       }
     }
     return { services, unmonitored };
@@ -155,8 +186,16 @@ export async function runScan(
   const services = byRegion.flatMap((region) => region.services);
 
   const endOfLifeProducts = new Set(services.flatMap((part) => (resultOf(part) ?? []).map(({ product }) => product)));
+  await stopIfCancelled();
+  const END_OF_LIFE: Step = { kind: "endoflife.date" };
+  progress.found(endOfLifeProducts.size, END_OF_LIFE);
+  progress.close(END_OF_LIFE, { evenEmpty: true });
   const products = await Promise.all(
-    [...endOfLifeProducts].map(async (endOfLifeProduct) => ({ endOfLifeProduct, ...(await releaseCycles(endOfLifeProduct, now)) })),
+    [...endOfLifeProducts].map(async (endOfLifeProduct) => {
+      const cycles = await releaseCycles(endOfLifeProduct, now);
+      progress.done(END_OF_LIFE, failureOf({ kind: "endoflife.date", product: endOfLifeProduct }, cycles));
+      return { endOfLifeProduct, ...cycles };
+    }),
   );
 
   return { ranAt: readAt, regions, services, products, unmonitored: byRegion.flatMap((region) => region.unmonitored) };

@@ -2,14 +2,27 @@ import { History, LoaderCircle } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import type { DiscoveredServiceRow, DiscoveryPart, DiscoveryResult, FailedDiscoveryPart } from "../awol/page-model.ts";
+import type { DiscoveredServiceRow, DiscoveryPart, DiscoveryResult, FailedDiscoveryPart, Running } from "../awol/page-model.ts";
 import { DiscoverButtons } from "./discover-buttons.tsx";
-import { formatTime } from "./format.ts";
+import { formatClock, formatTime, startedWhere } from "./format.ts";
 
 // The account's last Discovery: when it ran, every service it counts with
 // the regions and versions it found, and the parts it could not read, with
-// buttons to run it again. `running` is whether a Discovery is running now.
-export function DiscoverySection({ discovery, running }: { discovery?: DiscoveryResult; running: boolean }) {
+// buttons to run it again. `running` is whether a Discovery is running now,
+// `run` the one holding the account's lock, which says who started it, once
+// it holds it, and `busy` whether any Scan or Discovery of the account is
+// running, which the buttons wait for.
+export function DiscoverySection({
+  discovery,
+  running,
+  run,
+  busy,
+}: {
+  discovery?: DiscoveryResult;
+  running: boolean;
+  run?: Running;
+  busy: boolean;
+}) {
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
@@ -18,7 +31,8 @@ export function DiscoverySection({ discovery, running }: { discovery?: Discovery
           {running ? (
             <span className="flex items-center gap-2">
               <LoaderCircle className="size-4 animate-spin" />
-              Running since {formatTime(discovery?.startedAt ?? new Date().toISOString())}
+              Running since {formatClock(run?.startedAt ?? discovery?.startedAt ?? new Date().toISOString())}
+              {run !== undefined && `, ${startedWhere(run)}`}
             </span>
           ) : discovery === undefined ? (
             "none yet"
@@ -30,7 +44,7 @@ export function DiscoverySection({ discovery, running }: { discovery?: Discovery
             </>
           )}
         </p>
-        <DiscoverButtons running={running} anyFailed={(discovery?.failedParts.length ?? 0) > 0} />
+        <DiscoverButtons running={busy} anyFailed={(discovery?.failedParts.length ?? 0) > 0} />
       </div>
       {discovery !== undefined && (
         <>

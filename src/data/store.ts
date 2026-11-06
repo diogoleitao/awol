@@ -4,6 +4,7 @@ import type { SupportedService } from "../awol/component.ts";
 import type { Discovery } from "../awol/discovery.ts";
 import type { Scan } from "../awol/scan.ts";
 import { ifExists, writeFileAtomically } from "../fs.ts";
+import { openRunLock } from "./run-lock.ts";
 
 // What awol keeps about one AWS account: when it first and last saw it, its
 // last Discovery, its Monitored services, once chosen, and its last Scan.
@@ -40,6 +41,10 @@ export function openStore(dataDir: string) {
 
       return {
         load,
+
+        // The lock that lets one Scan or Discovery of the account run at a
+        // time.
+        lock: openRunLock(path.dirname(statePath)),
 
         // Loads the state, changes it, and saves it, after every change
         // queued before it, so two changes never overwrite each other.

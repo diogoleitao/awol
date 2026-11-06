@@ -1,10 +1,10 @@
-import { History, Info, KeyRound } from "lucide-react";
+import { History, Info, KeyRound, LoaderCircle } from "lucide-react";
 import { connection } from "next/server";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import type { FailedPart, LastScan, ScanPart, UnmonitoredService } from "../awol/page-model.ts";
+import type { FailedPart, LastScan, Running, ScanPart, UnmonitoredService } from "../awol/page-model.ts";
 import { appAwol, discoveryRunning } from "./app-awol.ts";
 import { DiscoverySection } from "./discovery-section.tsx";
-import { formatTime } from "./format.ts";
+import { formatClock, formatTime, startedWhere } from "./format.ts";
 import { MonitoredServicesForm } from "./monitored-services-form.tsx";
 import { ScanButton } from "./scan-button.tsx";
 import { ScanTable } from "./scan-table.tsx";
@@ -29,6 +29,10 @@ export default async function DashboardPage() {
     );
   }
 
+  // A Discovery this server has started is running before it holds the
+  // account's lock.
+  const discovering = discoveryRunning() || model.running?.operation === "Discovery";
+  const busy = discovering || model.running !== undefined;
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
@@ -40,9 +44,15 @@ export default async function DashboardPage() {
           <span className="text-muted-foreground">Last Scan</span>{" "}
           {model.lastScan === undefined ? "none yet" : formatTime(model.lastScan.ranAt)}
         </p>
-        {model.monitoredServices !== undefined && <ScanButton />}
+        {model.monitoredServices !== undefined && <ScanButton busy={busy} />}
+        {model.running?.operation === "Scan" && <RunningNote running={model.running} />}
       </div>
-      <DiscoverySection discovery={model.discovery} running={discoveryRunning()} />
+      <DiscoverySection
+        discovery={model.discovery}
+        running={discovering}
+        run={model.running?.operation === "Discovery" ? model.running : undefined}
+        busy={busy}
+      />
       {model.discovery !== undefined && (
         <MonitoredServicesForm
           services={model.discovery.services.filter(({ supported }) => supported)}
@@ -51,6 +61,17 @@ export default async function DashboardPage() {
       )}
       {model.lastScan !== undefined && <ScanResult scan={model.lastScan} />}
     </div>
+  );
+}
+
+// The Scan of the account running now, which the buttons wait for, and who
+// started it. A running Discovery shows in the Discovery section instead.
+function RunningNote({ running }: { running: Running }) {
+  return (
+    <p className="flex items-center gap-2 text-sm text-muted-foreground">
+      <LoaderCircle className="size-4 animate-spin" />
+      Scanning since {formatClock(running.startedAt)}, {startedWhere(running)}
+    </p>
   );
 }
 

@@ -12,6 +12,7 @@ import {
 import { readElastiCacheVersions } from "./elasticache.ts";
 import { readLambdaComponents } from "./lambda.ts";
 import { readOpenSearchVersions } from "./opensearch.ts";
+import { failureOf, type Progress, progressOf, type Step } from "./progress.ts";
 import { readRdsVersions } from "./rds.ts";
 import { enabledRegions, mapConcurrently, readPart, REGION_CONCURRENCY, type Stale } from "./scan.ts";
 
@@ -276,17 +277,30 @@ export type DiscoveryScope = "all" | "failed";
 // is kept as it is, and not read again, except a region's versions of an
 // AWS service whose resources there are read again, so the two agree.
 // Credentials that have expired or need an SSO login stop the Discovery,
-// saving nothing more, and are thrown.
+// saving nothing more, and are thrown. Its progress is told to
+// `onProgress`, a part kept as it was counting as done: an AWS service's
+// versions step is done once every region is counted and its versions are
+// read wherever it has resources. Before each part, `stopIfCancelled` throws
+// if the Discovery has been asked to stop, which stops it as credentials
+// that expire do.
 export async function runDiscovery(
   aws: AwsRunner,
   now: () => Date,
   previous: Discovery | undefined,
   scope: DiscoveryScope,
   save: (discovery: Discovery) => Promise<void>,
+  onProgress?: (progress: Progress) => void,
+  stopIfCancelled: () => Promise<void> = async () => {},
 ): Promise<void> {
   const { finishedAt: _, ...kept } = previous ?? { presence: [], versions: [] };
   let discovery: Discovery = { ...kept, startedAt: now().toISOString() };
   let stopped = false;
+  const progress = progressOf(onProgress);
+  const REGIONS: Step = { kind: "regions" };
+  const counting = (awsService: AwsService): Step => ({ kind: "counted", awsService });
+  const reading = (service: Service): Step => ({ kind: "versions", service });
+  // Every region's versions to read are known once each region is counted.
+  const closeVersions = () => VERSIONS.forEach(([service]) => progress.close(reading(service)));
 
   // Changes the Discovery and saves it, unless it has stopped.
   async function keep(change: (discovery: Discovery) => Discovery) {
@@ -309,34 +323,51 @@ export async function runDiscovery(
 
   try {
     await keep((discovery) => discovery);
-    const regions = (await readOrKeep(() => enabledRegions(aws), previous?.regions)) ?? previous!.regions!;
+    progress.found(1, REGIONS);
+    progress.close(REGIONS);
+    const regionsRead = await readOrKeep(() => enabledRegions(aws), previous?.regions);
+    progress.done(REGIONS, regionsRead && failureOf({ kind: "regions" }, regionsRead));
+    const regions = regionsRead ?? previous!.regions!;
     if (regions !== previous?.regions) await keep((discovery) => ({ ...discovery, regions }));
     const enabled = resultOf(regions) ?? [];
+    for (const [awsService] of PRESENCE) {
+      progress.found(enabled.length, counting(awsService));
+      progress.close(counting(awsService));
+    }
 
+    let counted = 0;
     await mapConcurrently(enabled, REGION_CONCURRENCY, async (region) => {
       // The AWS services whose resources in the region were read again.
       const reread = new Set<AwsService>();
       // One AWS service at a time, so a region makes one call at once.
       for (const [awsService, count] of PRESENCE) {
         if (stopped) return;
+        await stopIfCancelled();
         const same = (part: PresencePart) => part.awsService === awsService && part.region === region;
         const read = await readOrKeep(() => presenceIn(aws, region, count), previous?.presence.find(same));
+        progress.done(counting(awsService), read && failureOf({ kind: "presence", awsService, region }, read));
         if (read === undefined) continue;
         reread.add(awsService);
         await keep((discovery) => ({ ...discovery, presence: replaced(discovery.presence, same, { awsService, region, ...read }) }));
       }
-      for (const [service, readVersions] of VERSIONS) {
-        if (stopped || !hasComponents(discovery.presence, service, region)) continue;
+      const versions = VERSIONS.filter(([service]) => hasComponents(discovery.presence, service, region));
+      for (const [service] of versions) progress.found(1, reading(service));
+      if (++counted === enabled.length) closeVersions();
+      for (const [service, readVersions] of versions) {
+        if (stopped) return;
+        await stopIfCancelled();
         const same = (part: VersionsPart) => part.service === service && part.region === region;
         const read = await readOrKeep(
           async () => (await readVersions(aws, region)).map(discoveredComponent),
           previous?.versions.find(same),
           !reread.has(service),
         );
+        progress.done(reading(service), read && failureOf({ kind: "versions", service, region }, read));
         if (read === undefined) continue;
         await keep((discovery) => ({ ...discovery, versions: replaced(discovery.versions, same, { service, region, ...read }) }));
       }
     });
+    closeVersions();
 
     // The parts of regions no longer enabled go, and the Components of AWS
     // services that no longer have any.

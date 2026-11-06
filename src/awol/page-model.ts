@@ -1,3 +1,4 @@
+import type { Running } from "../data/run-lock.ts";
 import type { ExtendedSupport, Service, SupportDates, SupportedService } from "./component.ts";
 import type { DiscoveredServiceRow, DiscoveryPart, DiscoveryResult, FailedDiscoveryPart } from "./discovery.ts";
 import type { Drift } from "./drift.ts";
@@ -12,12 +13,21 @@ export type {
   Drift,
   FailedDiscoveryPart,
   FailedPart,
+  Running,
   ScanPart,
   Stale,
   SupportDates,
   SupportedService,
   UnmonitoredService,
 };
+
+// Who started a Scan or Discovery, in words, as the dashboard and the
+// server's log say it.
+export function startedWhere({ startedBy }: Running): string {
+  if (startedBy === "awol scan" || startedBy === "awol discover") return "started from the terminal";
+  if (startedBy === "the server on start") return "started by the server";
+  return "started from the dashboard";
+}
 
 // One row of the dashboard's table: a Component, its Status, and the dates of
 // its Release Cycle that exist. End of life and the end of Extended Support
@@ -61,9 +71,10 @@ export type LastScan = {
 };
 
 // What the dashboard shows: the AWS account of the active profile, its last
-// Discovery, its Monitored services, once chosen, and its last Scan, each if
-// one has run, or, when its credentials have expired or need an SSO login,
-// the `aws` CLI's reason.
+// Discovery, its Monitored services, once chosen, its last Scan, each if one
+// has run, and the Scan or Discovery of it running now, in any awol process,
+// if one is; or, when its credentials have expired or need an SSO login, the
+// `aws` CLI's reason.
 export type PageModel =
   | {
       kind: "signed-in";
@@ -71,5 +82,6 @@ export type PageModel =
       discovery?: DiscoveryResult;
       monitoredServices?: SupportedService[];
       lastScan?: LastScan;
+      running?: Running;
     }
   | { kind: "login-needed"; reason: string };
