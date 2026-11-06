@@ -1,7 +1,7 @@
-import type { ExtendedSupport, Service, SupportDates } from "./component.ts";
+import type { ExtendedSupport, Service, SupportDates, SupportedService } from "./component.ts";
 import type { DiscoveredServiceRow, DiscoveryPart, DiscoveryResult, FailedDiscoveryPart } from "./discovery.ts";
 import type { Drift } from "./drift.ts";
-import type { ComponentDrift, FailedPart, ScanPart, Stale } from "./scan.ts";
+import type { ComponentDrift, FailedPart, ScanPart, Stale, UnmonitoredService } from "./scan.ts";
 import type { Status } from "./status.ts";
 
 export type {
@@ -15,6 +15,8 @@ export type {
   ScanPart,
   Stale,
   SupportDates,
+  SupportedService,
+  UnmonitoredService,
 };
 
 // One row of the dashboard's table: a Component, its Status, and the dates of
@@ -48,17 +50,26 @@ export type ComponentRow = {
 };
 
 // The last Scan: when it ran, how many Components have each Status, its
-// Components, most urgent first, and the parts of it that could not be read.
+// Components, most urgent first, the parts of it that could not be read, and
+// the supported services it found resources of that are not monitored.
 export type LastScan = {
   ranAt: string;
   counts: Record<Status, number>;
   components: ComponentRow[];
   failedParts: FailedPart[];
+  unmonitoredServices: UnmonitoredService[];
 };
 
 // What the dashboard shows: the AWS account of the active profile, its last
-// Discovery and its last Scan, each if one has run, or, when its credentials
-// have expired or need an SSO login, the `aws` CLI's reason.
+// Discovery, its Monitored services, once chosen, and its last Scan, each if
+// one has run, or, when its credentials have expired or need an SSO login,
+// the `aws` CLI's reason.
 export type PageModel =
-  | { kind: "signed-in"; accountId: string; discovery?: DiscoveryResult; lastScan?: LastScan }
+  | {
+      kind: "signed-in";
+      accountId: string;
+      discovery?: DiscoveryResult;
+      monitoredServices?: SupportedService[];
+      lastScan?: LastScan;
+    }
   | { kind: "login-needed"; reason: string };

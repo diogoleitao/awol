@@ -1,7 +1,18 @@
 import { AwsCliError, type AwsRunner } from "../aws/runner.ts";
 import type { ReleaseCycle } from "../endoflife/release-cycles.ts";
 import { failedRead, type PartRead, resultOf, staleSince } from "../part-read.ts";
-import type { ComponentReading, ExtendedSupport, Product, Service, SupportDates } from "./component.ts";
+import {
+  type ComponentReading,
+  type ExtendedSupport,
+  type Product,
+  type Service,
+  SUPPORTED_BY,
+  SUPPORTED_SERVICES,
+  type SupportDates,
+  type SupportedCounts,
+  type SupportedService,
+  supportedServiceOf,
+} from "./component.ts";
 import { type Drift, driftFrom, driftFromCycle, newestCycleOf, withHighestLatestPatch } from "./drift.ts";
 import { ELASTICACHE_PRODUCTS, readElastiCacheComponents } from "./elasticache.ts";
 import { LAMBDA_PRODUCT, readLambdaComponents } from "./lambda.ts";
@@ -11,8 +22,10 @@ import { RDS_PRODUCTS, readRdsComponents } from "./rds.ts";
 // How many regions a Scan or Discovery reads at once.
 export const REGION_CONCURRENCY = 8;
 
-// The services a Scan reads in each region, in the order it reads them.
-const SERVICES: [Service, (aws: AwsRunner, region: string) => Promise<ComponentReading[]>][] = [
+// The services a Scan reads in each region, in the order it reads them. RDS
+// reads the Components of the Products `wanted` only; every other service
+// has one supported service, so is read whole or not at all.
+const SERVICES: [Service, (aws: AwsRunner, region: string, wanted: (product: Product) => boolean) => Promise<ComponentReading[]>][] = [
   ["RDS", readRdsComponents],
   ["ElastiCache", readElastiCacheComponents],
   ["OpenSearch", readOpenSearchComponents],
@@ -61,59 +74,128 @@ type ServicePart = { service: Service; region: string } & PartRead<StoredReading
 // them.
 type ProductPart = { endOfLifeProduct: string } & PartRead<ReleaseCycle[]>;
 
+// How many resources of each supported service of one service, not all of
+// them monitored, there are in one region.
+type CountPart = { service: Service; region: string } & PartRead<SupportedCounts>;
+
 // A Scan, kept by part: the regions enabled for the account, the Components
-// of each service in each of them, and the Release Cycles of their Products.
-// A Scan from before awol kept it by part has its Components only.
+// of each service in each of them, the Release Cycles of their Products, and
+// how many resources the services not monitored have in each region. A Scan
+// from before awol kept it by part has its Components only, and one from
+// before awol had Monitored services counts nothing.
 export type Scan = {
   ranAt: string;
   regions?: PartRead<string[]>;
   services?: ServicePart[];
   products?: ProductPart[];
+  unmonitored?: CountPart[];
   components?: ScannedComponent[];
 };
+
+// A supported service that is not monitored, and how many resources a Scan
+// found of it.
+export type UnmonitoredService = { service: SupportedService; count: number };
 
 // A part of a Scan, as the dashboard names it.
 export type ScanPart =
   | { kind: "regions" }
   | { kind: "service"; service: Service; region: string }
+  | { kind: "unmonitored"; service: Service; region: string }
   | { kind: "endoflife.date"; product: string };
 
 // A part of the last Scan that could not be read, with its error: Stale with
 // when it was last read successfully, or never read successfully.
 export type FailedPart = { part: ScanPart; error: string } & Partial<Stale>;
 
-// Reads every Component in the regions enabled for the account, and the
-// Release Cycles of their Products. The account's regions, or a service in a
+// Reads every Component of the `monitored` services in the regions enabled
+// for the account, and the Release Cycles of their Products, and counts the
+// resources of the supported services not monitored with `countSupported`,
+// reading nothing more of them. The account's regions, or a service in a
 // region, that cannot be read keep their result from `previous`, the
 // account's last Scan; a product endoflife.date fails for keeps its last
 // answer.
 export async function runScan(
   aws: AwsRunner,
   releaseCycles: (endOfLifeProduct: string, now: Date) => Promise<PartRead<ReleaseCycle[]>>,
+  countSupported: (aws: AwsRunner, service: Service, region: string) => Promise<SupportedCounts>,
   now: Date,
   previous: Scan | undefined,
+  monitored: SupportedService[],
 ): Promise<Scan> {
   const readAt = now.toISOString();
   const regions = await readPart(() => enabledRegions(aws), readAt, previous?.regions);
-  const services = (
-    await mapConcurrently(resultOf(regions) ?? [], REGION_CONCURRENCY, async (region) => {
-      const parts: ServicePart[] = [];
-      // One service at a time, so a region makes one call at once.
-      for (const [service, read] of SERVICES) {
-        const last = previous?.services?.find((part) => part.service === service && part.region === region);
-        const reading = await readPart(async () => (await read(aws, region)).map(storedReading), readAt, last);
-        parts.push({ service, region, ...reading });
+  const byRegion = await mapConcurrently(resultOf(regions) ?? [], REGION_CONCURRENCY, async (region) => {
+    const services: ServicePart[] = [];
+    const unmonitored: CountPart[] = [];
+    const same = (part: { service: Service; region: string }, service: Service) => part.service === service && part.region === region;
+    // One service at a time, so a region makes one call at once.
+    for (const [service, read] of SERVICES) {
+      const supported = SUPPORTED_BY[service];
+      if (supported.some((other) => !monitored.includes(other))) {
+        // Only the services not monitored are counted, Stale or not, so
+        // none is counted again from the Components read.
+        const notMonitored = (counts: SupportedCounts): SupportedCounts =>
+          Object.fromEntries(supported.filter((other) => !monitored.includes(other)).map((other) => [other, counts[other] ?? 0]));
+        const last = withResult(previous?.unmonitored?.find((part) => same(part, service)), notMonitored);
+        const counted = await readPart(async () => notMonitored(await countSupported(aws, service, region)), readAt, last);
+        unmonitored.push({ service, region, ...counted });
       }
-      return parts;
-    })
-  ).flat();
+      if (supported.some((other) => monitored.includes(other))) {
+        const wanted = (product: Product) => monitored.includes(supportedServiceOf(service, product.endOfLifeProduct));
+        // A Stale result keeps none of the Components of a service no
+        // longer monitored.
+        const last = withResult(previous?.services?.find((part) => same(part, service)), (readings: StoredReading[]) =>
+          readings.filter((reading) => monitored.includes(serviceOf(service, reading))),
+        );
+        services.push({ service, region, ...(await readPart(async () => (await read(aws, region, wanted)).map(storedReading), readAt, last)) });
+      }
+    }
+    return { services, unmonitored };
+  });
+  const services = byRegion.flatMap((region) => region.services);
 
   const endOfLifeProducts = new Set(services.flatMap((part) => (resultOf(part) ?? []).map(({ product }) => product)));
   const products = await Promise.all(
     [...endOfLifeProducts].map(async (endOfLifeProduct) => ({ endOfLifeProduct, ...(await releaseCycles(endOfLifeProduct, now)) })),
   );
 
-  return { ranAt: readAt, regions, services, products };
+  return { ranAt: readAt, regions, services, products, unmonitored: byRegion.flatMap((region) => region.unmonitored) };
+}
+
+// `part` with its result, if it has one, changed by `change`.
+function withResult<T, P extends PartRead<T>>(part: P | undefined, change: (result: T) => T): P | undefined {
+  return part === undefined || !("result" in part) ? part : { ...part, result: change(part.result) };
+}
+
+// The supported service the Component read from `service` as `reading` is
+// of.
+function serviceOf(service: Service, reading: StoredReading): SupportedService {
+  return supportedServiceOf(service, reading.product);
+}
+
+// The resource the Component read from `service` as `reading` is, in its
+// region: for Lambda, the function, whose name has no colon and comes before
+// the version in each of its Components' identifiers, and for every other
+// service, the Component itself.
+function resourceOf(service: Service, reading: StoredReading): string {
+  const resource = service === "Lambda" ? reading.identifier.split(":")[0]! : reading.identifier;
+  return `${reading.region} ${resource}`;
+}
+
+// The supported services not `monitored` that `scan` found resources of,
+// with how many, in the order the dashboard shows them: those it counted,
+// and those monitored when it ran, whose resources it read.
+export function unmonitoredServicesOf(scan: Scan, monitored: SupportedService[]): UnmonitoredService[] {
+  return SUPPORTED_SERVICES.filter((service) => !monitored.includes(service)).flatMap((service) => {
+    const counted = (scan.unmonitored ?? []).reduce((sum, part) => sum + (resultOf(part)?.[service] ?? 0), 0);
+    const read = new Set(
+      (scan.services ?? []).flatMap((part) =>
+        (resultOf(part) ?? []).filter((reading) => serviceOf(part.service, reading) === service).map((reading) => resourceOf(part.service, reading)),
+      ),
+    );
+    const count = counted + read.size;
+    return count === 0 ? [] : [{ service, count }];
+  });
 }
 
 // Reads one part of a Scan or Discovery, keeping the result of `last`, its
@@ -133,12 +215,14 @@ function storedReading({ product, ...reading }: ComponentReading): StoredReading
   return { ...reading, product: product.endOfLifeProduct };
 }
 
-// The Components of `scan`, each matched to its Release Cycle.
-export function componentsOf(scan: Scan): ScannedComponent[] {
+// The Components of `scan` of the `monitored` services, each matched to its
+// Release Cycle. A Scan from before awol kept it by part has every Component
+// it read.
+export function componentsOf(scan: Scan, monitored: SupportedService[]): ScannedComponent[] {
   if (scan.services === undefined) return scan.components ?? [];
   const products = new Map((scan.products ?? []).map((part) => [part.endOfLifeProduct, part]));
   return scan.services.flatMap((part) =>
-    (resultOf(part) ?? []).map((reading) => {
+    (resultOf(part) ?? []).filter((reading) => monitored.includes(serviceOf(part.service, reading))).map((reading) => {
       const productPart = products.get(reading.product);
       // A product endoflife.date has never given matches no Release Cycle.
       const component = matchedComponent(reading, resultOf(productPart) ?? []);
@@ -158,6 +242,7 @@ export function failedPartsOf(scan: Scan): FailedPart[] {
   return [
     ...(scan.regions === undefined ? [] : failed({ kind: "regions" }, scan.regions)),
     ...(scan.services ?? []).flatMap(({ service, region, ...read }) => failed({ kind: "service", service, region }, read)),
+    ...(scan.unmonitored ?? []).flatMap(({ service, region, ...read }) => failed({ kind: "unmonitored", service, region }, read)),
     ...(scan.products ?? []).flatMap(({ endOfLifeProduct, ...read }) => failed({ kind: "endoflife.date", product: endOfLifeProduct }, read)),
   ];
 }

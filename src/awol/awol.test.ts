@@ -6,6 +6,7 @@ import { isReadOnly } from "../aws/read-only.ts";
 import { type AwsRunner, awsCliError } from "../aws/runner.ts";
 import type { EndOfLifeFetcher } from "../endoflife/fetcher.ts";
 import { openAwol } from "./awol.ts";
+import { SUPPORTED_SERVICES } from "./component.ts";
 import { type DashboardView, dashboardViewOf, filterOptionsOf, NO_FILTERS } from "./dashboard-view.ts";
 import type { DiscoveryResult } from "./page-model.ts";
 // Recorded from `aws sts get-caller-identity --output json` against a real
@@ -194,6 +195,12 @@ function fakeEndOfLife(
 
 function awol(aws: AwsRunner, now = NOW, endOfLife: EndOfLifeFetcher = fakeEndOfLife()) {
   return openAwol({ aws, endOfLife, dataDir: dir, clock: { now: () => now } });
+}
+
+// A Scan on `now` of an account that monitors every supported service.
+async function scanAll(aws: AwsRunner, now = NOW, endOfLife: EndOfLifeFetcher = fakeEndOfLife()) {
+  await awol(aws, now, endOfLife).setMonitoredServices([...SUPPORTED_SERVICES]);
+  return awol(aws, now, endOfLife).scan();
 }
 
 // Ends every test: awol only ever asked the CLI to read, and for JSON.
@@ -634,7 +641,7 @@ async function scannedComponent(
   }: { now?: Date; majorVersions?: Record<string, unknown>; engineVersions?: Record<string, unknown>; endOfLife?: EndOfLifeFetcher } = {},
 ) {
   const aws = account({ instances: { "eu-west-1": [instance("db-6", changes)] }, majorVersions, engineVersions });
-  await awol(aws, now, endOfLife).scan();
+  await scanAll(aws, now, endOfLife);
   const model = await awol(aws, now, endOfLife).pageModel();
   if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
   return { component: model.lastScan!.components[0]!, aws };
@@ -644,11 +651,12 @@ describe("a Scan", () => {
   it("shows every RDS instance of the account with its Status, most urgent first", async () => {
     const aws = account();
 
-    await awol(aws).scan();
+    await scanAll(aws);
 
     expect(await awol(aws).pageModel()).toEqual({
       kind: "signed-in",
       accountId: "123456789012",
+      monitoredServices: ["RDS", "Aurora", "ElastiCache Redis OSS", "OpenSearch Service", "Lambda"],
       lastScan: {
         ranAt: "2026-11-03T12:00:00.000Z",
         counts: { AWOL: 1, "Falling behind": 2, Current: 2, Untracked: 0 },
@@ -771,6 +779,7 @@ describe("a Scan", () => {
           },
         ],
         failedParts: [],
+        unmonitoredServices: [],
       },
     });
     expectOnlyJsonReads(aws);
@@ -795,7 +804,7 @@ describe("a Scan", () => {
     );
     const aws = account({ regions, instances: { "eu-south-2": [instance("db-6")], "us-west-2": [instance("db-7")] } });
 
-    await awol(aws).scan();
+    await scanAll(aws);
 
     expect(await statuses(aws)).toEqual([
       { identifier: "db-6", region: "eu-south-2", status: "Current" },
@@ -821,7 +830,7 @@ describe("a Scan", () => {
       { calls: recorded.calls },
     );
 
-    await awol(aws).scan();
+    await scanAll(aws);
 
     expect(mostInFlight).toBeGreaterThan(1);
     expect(mostInFlight).toBeLessThanOrEqual(8);
@@ -839,7 +848,7 @@ describe("a Scan", () => {
       },
     });
 
-    await awol(aws).scan();
+    await scanAll(aws);
 
     expect(await statuses(aws)).toEqual([{ identifier: "db-6", region: "eu-west-1", status: "Current" }]);
     expectOnlyJsonReads(aws);
@@ -856,7 +865,7 @@ describe("a Scan", () => {
       },
     });
 
-    await awol(aws).scan();
+    await scanAll(aws);
 
     expect(await statuses(aws)).toEqual([{ identifier: "db-6", region: "eu-west-1", status: "Current" }]);
     expectOnlyJsonReads(aws);
@@ -879,7 +888,7 @@ describe("a Scan", () => {
   ])("matches %s %s to %s Release Cycle %s", async (engine, version, product, releaseCycle, status) => {
     const aws = account({ instances: { "eu-west-1": [instance("db-6", { Engine: engine, EngineVersion: version })] } });
 
-    await awol(aws).scan();
+    await scanAll(aws);
 
     const model = await awol(aws).pageModel();
     expect(model).toMatchObject({ lastScan: { components: [{ product, version, releaseCycle, status }] } });
@@ -893,7 +902,7 @@ describe("a Scan", () => {
   ])("shows %s %s, which matches no Release Cycle, as Untracked", async (engine, version, product) => {
     const aws = account({ instances: { "eu-west-1": [instance("db-6", { Engine: engine, EngineVersion: version })] } });
 
-    await awol(aws).scan();
+    await scanAll(aws);
 
     expect(await awol(aws).pageModel()).toMatchObject({
       lastScan: {
@@ -920,7 +929,7 @@ describe("a Scan", () => {
     const aws = account({ instances: { "eu-west-1": [instance("db-6", { Engine: engine, EngineVersion: version })] } });
     const now = new Date(`${date}T12:00:00Z`);
 
-    await awol(aws, now).scan();
+    await scanAll(aws, now);
 
     expect(await statuses(aws, now)).toEqual([{ identifier: "db-6", region: "eu-west-1", status }]);
     expectOnlyJsonReads(aws);
@@ -944,7 +953,7 @@ describe("a Scan", () => {
     });
     const farFuture = new Date("2040-01-01T12:00:00Z");
 
-    await awol(aws, farFuture, endOfLife).scan();
+    await scanAll(aws, farFuture, endOfLife);
 
     const model = await awol(aws, farFuture, endOfLife).pageModel();
     expect(model).toMatchObject({ lastScan: { components: [{ releaseCycle: "18", status: "Current" }] } });
@@ -984,7 +993,7 @@ describe("a Scan", () => {
       },
     });
 
-    await awol(aws).scan();
+    await scanAll(aws);
 
     expect((await statuses(aws))?.map(({ identifier }) => identifier)).toEqual([
       "awol-2025",
@@ -1006,9 +1015,9 @@ describe("a Scan", () => {
     const first = account();
     const second = fakeAws({ ...accountAnswers(), [CALLER_IDENTITY]: SIGNED_IN_ELSEWHERE });
 
-    await awol(first, NOW, endOfLife).scan();
+    await scanAll(first, NOW, endOfLife);
     const firstCalls = endOfLife.calls.splice(0);
-    await awol(second, NOW, endOfLife).scan();
+    await scanAll(second, NOW, endOfLife);
 
     const byUrl = (a: { url: string }, b: { url: string }) => a.url.localeCompare(b.url);
     expect(firstCalls.sort(byUrl)).toEqual([
@@ -1029,7 +1038,7 @@ describe("a Scan", () => {
   it("asks to log in again when credentials expire, keeping the last Scan", async () => {
     const signedIn = account();
     const expired = fakeAws({ [CALLER_IDENTITY]: { stderr: credentialErrors.ssoTokenExpired } });
-    await awol(signedIn).scan();
+    await scanAll(signedIn);
 
     expect(await awol(expired, new Date("2026-11-04T08:30:00Z")).scan()).toEqual({
       kind: "login-needed",
@@ -1069,7 +1078,7 @@ describe("a Scan that fails in part", () => {
       instances: { "eu-west-1": [instance("db-6")] },
       functions: { "eu-west-1": [{ latest: lambdaFunction("function-6") }] },
     });
-    await awol(before, NOW).scan();
+    await scanAll(before, NOW);
     // db-6 has been replaced by db-7 and function-6 moved to python3.13, but
     // RDS fails in eu-west-1.
     const after = fakeAws({
@@ -1080,7 +1089,7 @@ describe("a Scan that fails in part", () => {
       [describeDbInstancesIn("eu-west-1")]: { stderr },
     });
 
-    await awol(after, LATER).scan();
+    await scanAll(after, LATER);
 
     const scan = await lastScan(after);
     expect(scan.ranAt).toBe("2026-11-04T08:30:00.000Z");
@@ -1119,10 +1128,10 @@ describe("a Scan that fails in part", () => {
     "uses the cached copy of a product endoflife.date fails for with %s, Stale since its last successful read",
     async (failure, error) => {
       const aws = account({ instances: { "eu-west-1": [instance("db-6"), instance("db-7", { Engine: "mysql", EngineVersion: "8.4.7" })] } });
-      await awol(aws, NOW).scan();
+      await scanAll(aws, NOW);
       const failing = failingEndOfLife("amazon-rds-postgresql", failure);
 
-      await awol(aws, LATER, failing).scan();
+      await scanAll(aws, LATER, failing);
 
       const scan = await lastScan(aws, LATER, failing);
       expect(scan.components.map(({ identifier, releaseCycle, status, stale }) => ({ identifier, releaseCycle, status, stale }))).toEqual([
@@ -1145,7 +1154,7 @@ describe("a Scan that fails in part", () => {
     await utimes(cachePath, NOW, NOW);
     const failing = failingEndOfLife("amazon-rds-postgresql", 503);
 
-    await awol(aws, LATER, failing).scan();
+    await scanAll(aws, LATER, failing);
 
     const scan = await lastScan(aws, LATER, failing);
     expect(scan.components).toMatchObject([
@@ -1170,7 +1179,7 @@ describe("a Scan that fails in part", () => {
       [describeDbInstancesIn("eu-west-1")]: { stderr: awsErrors.accessDenied },
     });
 
-    await awol(aws, NOW).scan();
+    await scanAll(aws, NOW);
 
     const scan = await lastScan(aws, NOW);
     expect(rows(scan)).toEqual([{ identifier: "function-6:$LATEST", version: "python3.12", stale: undefined }]);
@@ -1184,7 +1193,7 @@ describe("a Scan that fails in part", () => {
     const aws = account({ instances: { "eu-west-1": [instance("db-6")] } });
     const failing = failingEndOfLife("amazon-rds-postgresql", 503);
 
-    await awol(aws, NOW, failing).scan();
+    await scanAll(aws, NOW, failing);
 
     const scan = await lastScan(aws, NOW, failing);
     expect(scan.components).toMatchObject([{ identifier: "db-6", releaseCycle: undefined, status: "Untracked" }]);
@@ -1198,7 +1207,7 @@ describe("a Scan that fails in part", () => {
   it("reads the previous Scan's regions when the account's regions cannot be read, Stale since their last successful read", async () => {
     const regions = listRegions.Regions.map((region) => (region.RegionName === "eu-south-2" ? { ...region, RegionOptStatus: "ENABLED" } : region));
     const before = account({ regions, instances: { "eu-south-2": [instance("db-6")] } });
-    await awol(before, NOW).scan();
+    await scanAll(before, NOW);
     // db-6 has been replaced by db-7, but the account's regions cannot be
     // read.
     const after = fakeAws({
@@ -1206,7 +1215,7 @@ describe("a Scan that fails in part", () => {
       [LIST_REGIONS]: { stderr: awsErrors.listRegionsAccessDenied },
     });
 
-    await awol(after, LATER).scan();
+    await scanAll(after, LATER);
 
     const scan = await lastScan(after);
     expect(rows(scan)).toEqual([{ identifier: "db-7", version: "17.9", stale: undefined }]);
@@ -1222,9 +1231,11 @@ describe("a Scan that fails in part", () => {
   it("reads no region, showing the error, when the account's regions have never been read successfully", async () => {
     const aws = fakeAws({ ...accountAnswers(), [LIST_REGIONS]: { stderr: awsErrors.listRegionsAccessDenied } });
 
-    await awol(aws, NOW).scan();
+    await scanAll(aws, NOW);
 
+    // Once to choose the Monitored services, and once to Scan.
     expect(aws.calls.map(([service, subcommand]) => `${service} ${subcommand}`)).toEqual([
+      "sts get-caller-identity",
       "sts get-caller-identity",
       "account list-regions",
     ]);
@@ -1236,7 +1247,7 @@ describe("a Scan that fails in part", () => {
 
   it("asks to log in again when credentials expire part-way through a Scan, keeping every result of the last Scan", async () => {
     const before = account({ instances: { "eu-west-1": [instance("db-6")] } });
-    await awol(before, NOW).scan();
+    await scanAll(before, NOW);
     const kept = await lastScan(before, NOW);
     // db-6 has been replaced by db-7, but credentials expire before RDS is
     // read in eu-west-1.
@@ -1254,7 +1265,7 @@ describe("a Scan that fails in part", () => {
 
   it("shows a Scan kept before awol kept Scans by part, and reads every part again on the next Scan", async () => {
     const aws = account({ instances: { "eu-west-1": [instance("db-6")] } });
-    await awol(aws, NOW).scan();
+    await scanAll(aws, NOW);
     const shown = await lastScan(aws, NOW);
     // The same Scan as awol kept it before: its Components only.
     await writeFile(
@@ -1289,7 +1300,7 @@ describe("a Scan that fails in part", () => {
       ...accountAnswers({ instances: { "eu-west-1": [instance("db-6")] } }),
       [describeDbInstancesIn("eu-west-1")]: { stderr: awsErrors.accessDenied },
     });
-    await awol(failing, LATER).scan();
+    await scanAll(failing, LATER);
     expect((await lastScan(failing)).components).toEqual([]);
     expectOnlyJsonReads(aws);
     expectOnlyJsonReads(failing);
@@ -1361,7 +1372,7 @@ describe("AWS's support dates for RDS", () => {
       [describeMajorVersionsIn("us-west-2", "postgres")]: { stdout: JSON.stringify(later) },
     });
 
-    await awol(aws).scan();
+    await scanAll(aws);
 
     const model = await awol(aws).pageModel();
     expect(model.kind === "signed-in" && model.lastScan?.components.map(({ identifier, endOfLife }) => ({ identifier, endOfLife }))).toEqual([
@@ -1410,7 +1421,7 @@ describe("AWS's support dates for RDS", () => {
   it("shows each Component's Extended Support setting, and one on Extended Support as AWOL", async () => {
     const aws = account();
 
-    await awol(aws).scan();
+    await scanAll(aws);
 
     const model = await awol(aws).pageModel();
     expect(model.kind === "signed-in" && model.lastScan?.components.map(({ identifier, status, extendedSupport }) => ({ identifier, status, extendedSupport }))).toEqual([
@@ -1455,7 +1466,7 @@ describe("Aurora and Multi-AZ DB clusters", () => {
   // check last.
   async function scannedClusters(clusters: DbCluster[], instances: DbInstance[] = []) {
     const aws = account({ instances: { "eu-west-1": instances }, clusters: { "eu-west-1": clusters } });
-    await awol(aws).scan();
+    await scanAll(aws);
     const model = await awol(aws).pageModel();
     if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
     return { components: model.lastScan!.components, aws };
@@ -1616,7 +1627,7 @@ describe("Aurora and Multi-AZ DB clusters", () => {
       majorVersions: { ...MAJOR_VERSIONS, "aurora-postgresql": earlier },
     });
 
-    await awol(aws).scan();
+    await scanAll(aws);
 
     expect(await awol(aws).pageModel()).toMatchObject({
       lastScan: {
@@ -1746,7 +1757,7 @@ describe("Drift for RDS", () => {
       [describeEngineVersionsIn("us-west-2", "postgres")]: { stdout: JSON.stringify(older) },
     });
 
-    await awol(aws).scan();
+    await scanAll(aws);
 
     const model = await awol(aws).pageModel();
     expect(model.kind === "signed-in" && model.lastScan?.components.map(({ identifier, drift }) => ({ identifier, newestOffered: drift.newestOffered }))).toEqual([
@@ -1812,7 +1823,7 @@ describe("ElastiCache Redis OSS caches", () => {
       cacheClusters: { "eu-west-1": [...groups.flatMap(({ members }) => members), ...standalone] },
       serverlessCaches: { "eu-west-1": serverless },
     });
-    await awol(aws).scan();
+    await scanAll(aws);
     const model = await awol(aws).pageModel();
     if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
     return { components: model.lastScan!.components, aws };
@@ -1990,7 +2001,7 @@ describe("ElastiCache Redis OSS caches", () => {
       [describeCacheEngineVersionsIn("us-west-2", "redis")]: { stdout: JSON.stringify(older) },
     });
 
-    await awol(aws).scan();
+    await scanAll(aws);
 
     const model = await awol(aws).pageModel();
     expect(model.kind === "signed-in" && model.lastScan?.components.map(({ identifier, drift }) => ({ identifier, newestOffered: drift.newestOffered }))).toEqual([
@@ -2006,7 +2017,7 @@ describe("OpenSearch domains", () => {
   // `domains` in eu-west-1, on `now`; and the fake runner, to check last.
   async function scannedDomains(domains: Domain[], now = NOW) {
     const aws = account({ instances: {}, domains: { "eu-west-1": domains } });
-    await awol(aws, now).scan();
+    await scanAll(aws, now);
     const model = await awol(aws, now).pageModel();
     if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
     return { components: model.lastScan!.components, aws };
@@ -2150,7 +2161,7 @@ describe("OpenSearch domains", () => {
       [listVersionsIn("us-west-2")]: { stdout: JSON.stringify(older) },
     });
 
-    await awol(aws).scan();
+    await scanAll(aws);
 
     const model = await awol(aws).pageModel();
     expect(model.kind === "signed-in" && model.lastScan?.components.map(({ identifier, drift }) => ({ identifier, newestOffered: drift.newestOffered }))).toEqual([
@@ -2175,7 +2186,7 @@ describe("OpenSearch domains", () => {
       [describeDomainsIn("eu-west-1", ["domain-1", "domain-2"])]: { stdout: JSON.stringify({ DomainStatusList: [domain("domain-1")] }) },
     });
 
-    await awol(aws).scan();
+    await scanAll(aws);
 
     const model = await awol(aws).pageModel();
     expect(model.kind === "signed-in" && model.lastScan?.components.map(({ identifier }) => identifier)).toEqual(["domain-1"]);
@@ -2188,7 +2199,7 @@ describe("Lambda functions", () => {
   // `functions` in eu-west-1, on `now`; and the fake runner, to check last.
   async function scannedFunctions(functions: DeployedFunction[], now = NOW) {
     const aws = account({ instances: {}, functions: { "eu-west-1": functions } });
-    await awol(aws, now).scan();
+    await scanAll(aws, now);
     const model = await awol(aws, now).pageModel();
     if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
     return { components: model.lastScan!.components, aws };
@@ -2394,7 +2405,7 @@ describe("the dashboard's filters and grouping", () => {
         "us-east-1": [{ latest: lambdaFunction("function-1") }],
       },
     });
-    await awol(aws).scan();
+    await scanAll(aws);
     const model = await awol(aws).pageModel();
     if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
     return { lastScan: model.lastScan!, aws };
@@ -2504,6 +2515,15 @@ describe("the dashboard's filters and grouping", () => {
   });
 });
 
+// The regions `aws` made the call `service subcommand` in, each once, in
+// order.
+function regionsCalled(aws: { calls: string[][] }, call: string): string[] {
+  const regions = aws.calls
+    .filter(([service, subcommand]) => `${service} ${subcommand}` === call)
+    .map((argv) => argv[argv.indexOf("--region") + 1]!);
+  return [...new Set(regions)].sort();
+}
+
 describe("Discovery", () => {
   const LATER = new Date("2026-11-04T08:30:00Z");
 
@@ -2518,15 +2538,6 @@ describe("Discovery", () => {
   // each region.
   function found({ services }: DiscoveryResult) {
     return services.filter(({ count }) => count > 0).map(({ service, count, regions }) => ({ service, count, regions }));
-  }
-
-  // The regions `aws` made the call `service subcommand` in, each once, in
-  // order.
-  function regionsCalled(aws: { calls: string[][] }, call: string): string[] {
-    const regions = aws.calls
-      .filter(([service, subcommand]) => `${service} ${subcommand}` === call)
-      .map((argv) => argv[argv.indexOf("--region") + 1]!);
-    return [...new Set(regions)].sort();
   }
 
   it("lists the enabled regions, then counts each service's resources in each of them", async () => {
@@ -2913,5 +2924,283 @@ describe("Discovery", () => {
     expect(await discovery(before)).toEqual(kept);
     expectOnlyJsonReads(before);
     expectOnlyJsonReads(after);
+  });
+});
+
+describe("Monitored services", () => {
+  // The page on `now`, signed in.
+  async function page(aws: AwsRunner, now = NOW) {
+    const model = await awol(aws, now).pageModel();
+    if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+    return model;
+  }
+
+  it("starts with Discovery instead of a Scan for an account awol has not seen, monitoring nothing yet", async () => {
+    const aws = account({ functions: { "us-east-1": [{ latest: lambdaFunction("function-6") }] } });
+
+    expect(await awol(aws).start()).toEqual({ kind: "discovered" });
+
+    const model = await page(aws);
+    expect(model.discovery).toMatchObject({ finishedAt: "2026-11-03T12:00:00.000Z", failedParts: [] });
+    expect(model.monitoredServices).toBeUndefined();
+    expect(model.lastScan).toBeUndefined();
+    expectOnlyJsonReads(aws);
+  });
+
+  it("must be chosen before a Scan reads anything, on start as on request", async () => {
+    const discovered = account();
+    await awol(discovered).start();
+    const aws = account();
+
+    expect(await awol(aws).start()).toEqual({ kind: "monitored-services-needed" });
+    expect(await awol(aws).scan()).toEqual({ kind: "monitored-services-needed" });
+
+    expect(aws.calls.map((argv) => argv.join(" "))).toEqual([CALLER_IDENTITY, CALLER_IDENTITY]);
+    expect((await page(aws)).lastScan).toBeUndefined();
+    expectOnlyJsonReads(discovered);
+    expectOnlyJsonReads(aws);
+  });
+
+  // An account with Components of every supported service: five RDS
+  // instances in eu-west-1, and an Aurora PostgreSQL cluster, a Redis OSS
+  // replication group, an OpenSearch domain and an aliased Lambda function in
+  // us-east-1.
+  function everyService() {
+    return account({
+      clusters: { "us-east-1": [cluster("cluster-1")] },
+      replicationGroups: { "us-east-1": [replicationGroup("group-4").group] },
+      cacheClusters: { "us-east-1": replicationGroup("group-4").members },
+      domains: { "us-east-1": [domain("domain-1")] },
+      functions: { "us-east-1": [{ latest: lambdaFunction("function-6"), aliases: [ALIASES[0]!] }] },
+    });
+  }
+
+  // Each call `aws` made, without its options.
+  function callsMade(aws: { calls: string[][] }): string[] {
+    return [...new Set(aws.calls.map(([service, subcommand]) => `${service} ${subcommand}`))].sort();
+  }
+
+  it("limit a Scan to their Components, reading nothing more of the services not monitored", async () => {
+    const aws = everyService();
+    await awol(aws).start();
+    await awol(aws).setMonitoredServices(["RDS"]);
+    aws.calls.length = 0;
+
+    expect(await awol(aws).start()).toEqual({ kind: "scanned" });
+
+    const { lastScan } = await page(aws);
+    expect(lastScan!.components.map(({ product, identifier }) => `${product} ${identifier}`).sort()).toEqual([
+      "RDS MySQL db-1",
+      "RDS PostgreSQL db-2",
+      "RDS PostgreSQL db-3",
+      "RDS PostgreSQL db-4",
+      "RDS PostgreSQL db-5",
+    ]);
+    expect(lastScan!.failedParts).toEqual([]);
+    for (const call of [
+      "rds describe-db-instances",
+      "rds describe-db-clusters",
+      "rds describe-db-major-engine-versions",
+      "rds describe-db-engine-versions",
+    ]) {
+      expect(callsMade(aws), call).toContain(call);
+    }
+    for (const call of ["elasticache describe-cache-engine-versions", "opensearch describe-domains", "opensearch list-versions", "lambda list-aliases"]) {
+      expect(callsMade(aws), call).not.toContain(call);
+    }
+    expect(aws.calls.filter((argv) => argv.includes("aurora-postgresql"))).toEqual([]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("leave out a service no longer monitored even where its part of the Scan fails and is Stale", async () => {
+    const LATER = new Date("2026-11-04T08:30:00Z");
+    const contents = { instances: {}, clusters: { "us-east-1": [cluster("cluster-1"), cluster("cluster-3")] } };
+    const before = account(contents);
+    await awol(before).start();
+    await awol(before).setMonitoredServices(["RDS", "Aurora"]);
+    await awol(before).scan();
+    expect((await page(before)).lastScan!.components.map(({ identifier }) => identifier).sort()).toEqual(["cluster-1", "cluster-3"]);
+    await awol(before).setMonitoredServices(["RDS"]);
+    const after = fakeAws({ ...accountAnswers(contents), [describeDbClustersIn("us-east-1")]: { stderr: awsErrors.throttling } });
+
+    await awol(after, LATER).scan();
+
+    const { lastScan } = await page(after, LATER);
+    expect(lastScan!.components.map(({ identifier, stale }) => ({ identifier, stale }))).toEqual([
+      { identifier: "cluster-3", stale: { lastReadAt: "2026-11-03T12:00:00.000Z" } },
+    ]);
+    expectOnlyJsonReads(before);
+    expectOnlyJsonReads(after);
+  });
+
+  it("leave out the last Scan's Components of a service as soon as it is no longer monitored, noting its resources instead", async () => {
+    const latest = lambdaFunction("function-6");
+    // function-6 is two Components, its $LATEST and version 9, which an
+    // alias points to, but one resource.
+    const aws = account({
+      instances: {},
+      clusters: { "us-east-1": [cluster("cluster-1"), cluster("cluster-3")] },
+      functions: {
+        "us-east-1": [{ latest, aliases: [ALIASES[3]!], versions: [{ ...latest, Version: "9", Runtime: "python3.9" }] }],
+      },
+    });
+    await awol(aws).start();
+    await awol(aws).setMonitoredServices(["RDS", "Lambda"]);
+    await awol(aws).scan();
+    expect((await page(aws)).lastScan!.components.map(({ identifier }) => identifier).sort()).toEqual([
+      "cluster-3",
+      "function-6:$LATEST",
+      "function-6:9",
+    ]);
+
+    await awol(aws).setMonitoredServices(["Aurora"]);
+
+    const { lastScan } = await page(aws);
+    expect(lastScan!.components).toEqual([]);
+    expect(lastScan!.counts).toEqual({ AWOL: 0, "Falling behind": 0, Current: 0, Untracked: 0 });
+    expect(lastScan!.unmonitoredServices).toEqual([
+      { service: "RDS", count: 1 },
+      { service: "Lambda", count: 1 },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("show a Scan kept before awol had Monitored services whole, as it read every service, while none are chosen", async () => {
+    const aws = account();
+    await scanAll(aws);
+    const shown = (await page(aws)).lastScan;
+    // The same Scan as awol kept it before: with no Monitored services.
+    const statePath = path.join(dir, "accounts", "123456789012", "state.json");
+    const { monitoredServices: _, ...kept } = JSON.parse(await readFile(statePath, "utf8"));
+    await writeFile(statePath, JSON.stringify(kept));
+
+    const model = await page(aws);
+    expect(model.monitoredServices).toBeUndefined();
+    expect(model.lastScan).toEqual(shown);
+    expect(model.lastScan!.components).toHaveLength(5);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("note each supported service a Scan finds resources of that is not monitored, never adding it", async () => {
+    const aws = account({
+      clusters: { "us-east-1": [cluster("cluster-1")] },
+      functions: {
+        "us-east-1": [{ latest: lambdaFunction("function-6"), aliases: [ALIASES[0]!] }],
+        "eu-west-2": [{ latest: lambdaFunction("function-7") }],
+      },
+      unmonitored: { "us-east-1": UNMONITORED },
+    });
+    await awol(aws).start();
+    await awol(aws).setMonitoredServices(["RDS"]);
+    aws.calls.length = 0;
+
+    await awol(aws).scan();
+
+    const { monitoredServices, lastScan } = await page(aws);
+    expect(lastScan!.unmonitoredServices).toEqual([
+      { service: "Aurora", count: 1 },
+      { service: "Lambda", count: 2 },
+    ]);
+    expect(monitoredServices).toEqual(["RDS"]);
+    expect(regionsCalled(aws, "lambda list-functions")).toEqual(ENABLED_REGIONS);
+    expect(regionsCalled(aws, "opensearch list-domain-names")).toEqual(ENABLED_REGIONS);
+    expect(regionsCalled(aws, "elasticache describe-replication-groups")).toEqual(ENABLED_REGIONS);
+    for (const call of ["lambda list-aliases", ...Object.keys(UNMONITORED_CALLS)]) {
+      expect(callsMade(aws), call).not.toContain(call);
+    }
+    expectOnlyJsonReads(aws);
+  });
+
+  it("keep a note's count that cannot be read on the next Scan, Stale since its last successful read", async () => {
+    const LATER = new Date("2026-11-04T08:30:00Z");
+    const contents = { functions: { "us-east-1": [{ latest: lambdaFunction("function-6") }] } };
+    const before = account(contents);
+    await awol(before).start();
+    await awol(before).setMonitoredServices(["RDS"]);
+    await awol(before).scan();
+    const after = fakeAws({ ...accountAnswers(contents), [listFunctionsIn("us-east-1")]: { stderr: awsErrors.throttling } });
+
+    await awol(after, LATER).scan();
+
+    const { lastScan } = await page(after, LATER);
+    expect(lastScan!.unmonitoredServices).toEqual([{ service: "Lambda", count: 1 }]);
+    expect(lastScan!.failedParts).toEqual([
+      {
+        part: { kind: "unmonitored", service: "Lambda", region: "us-east-1" },
+        error: awsErrors.throttling.trim(),
+        lastReadAt: "2026-11-03T12:00:00.000Z",
+      },
+    ]);
+    expectOnlyJsonReads(before);
+    expectOnlyJsonReads(after);
+  });
+
+  it("note nothing when a Scan finds no resources of the supported services not monitored", async () => {
+    const aws = account();
+    await awol(aws).start();
+    await awol(aws).setMonitoredServices(["RDS"]);
+
+    await awol(aws).scan();
+
+    expect((await page(aws)).lastScan!.unmonitoredServices).toEqual([]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("are chosen per service after Discovery, Aurora apart from RDS, and can be changed later", async () => {
+    const aws = account({ clusters: { "eu-west-1": [cluster("cluster-1")] } });
+    await awol(aws).start();
+
+    expect(await awol(aws).setMonitoredServices(["Lambda", "Aurora"])).toEqual({ kind: "saved" });
+    expect((await page(aws)).monitoredServices).toEqual(["Aurora", "Lambda"]);
+
+    expect(await awol(aws).setMonitoredServices(["RDS"])).toEqual({ kind: "saved" });
+    expect((await page(aws)).monitoredServices).toEqual(["RDS"]);
+
+    expect(await awol(aws).setMonitoredServices([])).toEqual({ kind: "saved" });
+    expect((await page(aws)).monitoredServices).toEqual([]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("keep each account's Discovery, Monitored services and Scans apart, starting with Discovery on a second account", async () => {
+    const first = account();
+    await awol(first).start();
+    await awol(first).setMonitoredServices(["RDS"]);
+    await awol(first).start();
+    const kept = await page(first);
+    const second = fakeAws({
+      ...accountAnswers({ instances: {}, functions: { "us-east-1": [{ latest: lambdaFunction("function-6") }] } }),
+      [CALLER_IDENTITY]: SIGNED_IN_ELSEWHERE,
+    });
+
+    expect(await awol(second).start()).toEqual({ kind: "discovered" });
+
+    const elsewhere = await page(second);
+    expect(elsewhere).toMatchObject({ accountId: "210987654321", monitoredServices: undefined, lastScan: undefined });
+    expect(elsewhere.discovery!.services.filter(({ count }) => count > 0).map(({ service }) => service)).toEqual(["Lambda"]);
+    await awol(second).setMonitoredServices(["Lambda"]);
+    expect(await awol(second).start()).toEqual({ kind: "scanned" });
+    expect((await page(second)).lastScan!.components.map(({ identifier }) => identifier)).toEqual(["function-6:$LATEST"]);
+
+    expect(await page(first)).toEqual(kept);
+    expect(kept.lastScan!.components).toHaveLength(5);
+    expect(kept.monitoredServices).toEqual(["RDS"]);
+    expectOnlyJsonReads(first);
+    expectOnlyJsonReads(second);
+  });
+
+  it("asks to log in again when credentials have expired, keeping the Monitored services", async () => {
+    const aws = account();
+    await awol(aws).start();
+    await awol(aws).setMonitoredServices(["RDS"]);
+    const expired = fakeAws({ [CALLER_IDENTITY]: { stderr: credentialErrors.ssoTokenExpired } });
+
+    expect(await awol(expired).setMonitoredServices(["Lambda"])).toEqual({
+      kind: "login-needed",
+      reason: credentialErrors.ssoTokenExpired.trim(),
+    });
+
+    expect((await page(aws)).monitoredServices).toEqual(["RDS"]);
+    expectOnlyJsonReads(aws);
+    expectOnlyJsonReads(expired);
   });
 });

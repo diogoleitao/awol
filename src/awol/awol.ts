@@ -3,9 +3,10 @@ import { AwsCliError, type AwsRunner } from "../aws/runner.ts";
 import { openStore } from "../data/store.ts";
 import type { EndOfLifeFetcher } from "../endoflife/fetcher.ts";
 import { openReleaseCycles } from "../endoflife/release-cycles.ts";
-import { type Discovery, type DiscoveryScope, discoveryResultOf, runDiscovery } from "./discovery.ts";
+import { SUPPORTED_SERVICES, type SupportedService } from "./component.ts";
+import { countSupportedIn, type Discovery, type DiscoveryScope, discoveryResultOf, runDiscovery } from "./discovery.ts";
 import type { ComponentDrift, ComponentRow, DiscoveryResult, LastScan, PageModel, SupportDates } from "./page-model.ts";
-import { componentsOf, failedPartsOf, runScan, type Scan } from "./scan.ts";
+import { componentsOf, failedPartsOf, runScan, type Scan, unmonitoredServicesOf } from "./scan.ts";
 import { countsOf, STATUSES, statusOf } from "./status.ts";
 
 export type Clock = { now(): Date };
@@ -22,13 +23,23 @@ export type AwolOptions = {
 // need an SSO login: the `aws` CLI's reason.
 type LoginNeeded = { kind: "login-needed"; reason: string };
 
-export type ScanOutcome = { kind: "scanned" } | LoginNeeded;
+// What a Scan ends in: read, not read because no Monitored services have been
+// chosen yet, or the CLI's reason to log in again.
+export type ScanOutcome = { kind: "scanned" } | { kind: "monitored-services-needed" } | LoginNeeded;
 
 export type DiscoveryOutcome = { kind: "discovered" } | LoginNeeded;
+
+// What choosing Monitored services ends in: kept, or the CLI's reason to log
+// in again, leaving them as they were.
+export type SetMonitoredServicesOutcome = { kind: "saved" } | LoginNeeded;
 
 // What to read in a Discovery, and what to tell the Discovery, as the
 // dashboard would show it, each time it keeps a part.
 export type DiscoverOptions = { scope?: DiscoveryScope; onPart?: (discovery: DiscoveryResult) => void };
+
+// What to tell the Discovery awol starts with, if it starts with one: that
+// it starts, and each part it keeps.
+export type StartOptions = { onDiscovery?: () => void; onPart?: (discovery: DiscoveryResult) => void };
 
 export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions) {
   // Every AWS call awol makes goes through here (ADR 0002).
@@ -63,41 +74,69 @@ export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions
     }
   }
 
+  // Runs a Discovery of the account `accountId`, as `discover` does.
+  async function discoverAccount(accountId: string, { scope = "all", onPart }: DiscoverOptions): Promise<{ kind: "discovered" }> {
+    const account = store.account(accountId);
+    const { discovery: previous } = await account.load();
+    const save = (discovery: Discovery | undefined) => account.update((state) => ({ ...state, discovery }));
+    try {
+      await runDiscovery(aws, () => clock.now(), previous, scope, async (discovery) => {
+        await save(discovery);
+        onPart?.(discoveryResultOf(discovery));
+      });
+    } catch (error) {
+      await save(previous);
+      throw error;
+    }
+    return { kind: "discovered" };
+  }
+
+  // Runs a Scan of the account `accountId`, as `scan` does.
+  async function scanAccount(accountId: string): Promise<ScanOutcome> {
+    const { monitoredServices, lastScan } = await store.account(accountId).load();
+    if (monitoredServices === undefined) return { kind: "monitored-services-needed" };
+    const scan = await runScan(aws, releaseCycles, countSupportedIn, clock.now(), lastScan, monitoredServices);
+    await store.account(accountId).update((state) => ({ ...state, lastScan: scan }));
+    return { kind: "scanned" };
+  }
+
   return {
+    // What awol does when it starts: a Discovery of an account it has never
+    // discovered, telling `onDiscovery` first, or else a Scan.
+    start({ onDiscovery, onPart }: StartOptions = {}): Promise<DiscoveryOutcome | ScanOutcome> {
+      return orLoginNeeded(async () => {
+        const accountId = await identify();
+        const { discovery } = await store.account(accountId).load();
+        if (discovery !== undefined) return scanAccount(accountId);
+        onDiscovery?.();
+        return discoverAccount(accountId, { onPart });
+      });
+    },
+
     // Finds which services the account uses, region by region, keeping each
     // part as the account's last Discovery as soon as it is read and telling
     // `onPart`. With scope "failed", reads only the parts the last Discovery
     // could not read. Credentials that expire part-way leave the last
     // Discovery as it was.
-    discover({ scope = "all", onPart }: DiscoverOptions = {}): Promise<DiscoveryOutcome> {
+    discover(options: DiscoverOptions = {}): Promise<DiscoveryOutcome> {
+      return orLoginNeeded(async () => discoverAccount(await identify(), options));
+    },
+
+    // Keeps `services` as the account's Monitored services, in the order the
+    // dashboard shows them.
+    setMonitoredServices(services: SupportedService[]): Promise<SetMonitoredServicesOutcome> {
       return orLoginNeeded(async () => {
-        const accountId = await identify();
-        const account = store.account(accountId);
-        const { discovery: previous } = await account.load();
-        const save = (discovery: Discovery | undefined) => account.update((state) => ({ ...state, discovery }));
-        try {
-          await runDiscovery(aws, () => clock.now(), previous, scope, async (discovery) => {
-            await save(discovery);
-            onPart?.(discoveryResultOf(discovery));
-          });
-        } catch (error) {
-          await save(previous);
-          throw error;
-        }
-        return { kind: "discovered" } as const;
+        const monitoredServices = SUPPORTED_SERVICES.filter((service) => services.includes(service));
+        await store.account(await identify()).update((state) => ({ ...state, monitoredServices }));
+        return { kind: "saved" } as const;
       });
     },
 
-    // Reads every Component of the account and its lifecycle data, and keeps
-    // them as the account's last Scan.
+    // Reads every Component of the account's Monitored services and its
+    // lifecycle data, and keeps them as the account's last Scan. Before any
+    // Monitored services are chosen it reads nothing.
     scan(): Promise<ScanOutcome> {
-      return orLoginNeeded(async () => {
-        const accountId = await identify();
-        const { lastScan } = await store.account(accountId).load();
-        const scan = await runScan(aws, releaseCycles, clock.now(), lastScan);
-        await store.account(accountId).update((state) => ({ ...state, lastScan: scan }));
-        return { kind: "scanned" } as const;
-      });
+      return orLoginNeeded(async () => scanAccount(await identify()));
     },
 
     // Credentials that have expired or need an SSO login make a page that
@@ -105,12 +144,15 @@ export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions
     pageModel(): Promise<PageModel> {
       return orLoginNeeded(async () => {
         const accountId = await identify();
-        const { discovery, lastScan } = await store.account(accountId).load();
+        const { discovery, monitoredServices, lastScan } = await store.account(accountId).load();
         return {
           kind: "signed-in",
           accountId,
           discovery: discovery === undefined ? undefined : discoveryResultOf(discovery),
-          lastScan: lastScan === undefined ? undefined : lastScanOf(lastScan, clock.now()),
+          monitoredServices,
+          // A Scan needs Monitored services, so one with none chosen is
+          // from before awol had them, and read every service.
+          lastScan: lastScan === undefined ? undefined : lastScanOf(lastScan, monitoredServices ?? [...SUPPORTED_SERVICES], clock.now()),
         } as const;
       });
     },
@@ -118,12 +160,13 @@ export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions
 }
 
 // The last Scan as the dashboard shows it on `now`'s date: each Component's
-// Status, sorted by Status and then by soonest End of life, and counted, and
-// the parts that could not be read. Where AWS gives a date, it decides over
-// endoflife.date's.
-function lastScanOf(scan: Scan, now: Date): LastScan {
+// Status, sorted by Status and then by soonest End of life, and counted, the
+// parts that could not be read, and the supported services it found
+// resources of that are not `monitored`. Where AWS gives a date, it decides
+// over endoflife.date's.
+function lastScanOf(scan: Scan, monitored: SupportedService[], now: Date): LastScan {
   const today = now.toISOString().slice(0, 10);
-  const components = componentsOf(scan).map(({ releaseCycle, awsLifecycle: aws = {}, drift = NO_DRIFT, ...component }): ComponentRow => {
+  const components = componentsOf(scan, monitored).map(({ releaseCycle, awsLifecycle: aws = {}, drift = NO_DRIFT, ...component }): ComponentRow => {
     const fromEndOfLifeDate: SupportDates = {
       endOfLife: releaseCycle?.endOfLife,
       extendedSupportEnd: releaseCycle?.extendedSupportEnd,
@@ -151,7 +194,13 @@ function lastScanOf(scan: Scan, now: Date): LastScan {
       STATUSES.indexOf(a.status) - STATUSES.indexOf(b.status) ||
       compareSoonestFirst(a.endOfLife, b.endOfLife),
   );
-  return { ranAt: scan.ranAt, counts: countsOf(components), components, failedParts: failedPartsOf(scan) };
+  return {
+    ranAt: scan.ranAt,
+    counts: countsOf(components),
+    components,
+    failedParts: failedPartsOf(scan),
+    unmonitoredServices: unmonitoredServicesOf(scan, monitored),
+  };
 }
 
 // The Drift of a Component in a Scan from before awol read Drift.

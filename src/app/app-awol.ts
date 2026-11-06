@@ -55,6 +55,29 @@ export function startDiscovery(scope: DiscoveryScope): void {
     });
 }
 
+// Does what awol does when the server starts, unless a Discovery is running:
+// a Discovery of an account it has never discovered, which the open tabs
+// follow just like one `startDiscovery` starts, or else a Scan. It is not
+// awaited.
+export function startUp(): void {
+  if (running.awolDiscovery !== undefined) return;
+  const startingUp: Promise<void> = appAwol()
+    .start({
+      onDiscovery: () => {
+        running.awolDiscovery = startingUp;
+        tellListeners();
+      },
+      onPart: tellListeners,
+    })
+    .then(() => {})
+    .catch((error: unknown) => console.error("awol: the Scan or Discovery on start failed:", error))
+    .finally(() => {
+      if (running.awolDiscovery !== startingUp) return;
+      running.awolDiscovery = undefined;
+      tellListeners();
+    });
+}
+
 // Whether a Discovery is running in this server.
 export function discoveryRunning(): boolean {
   return running.awolDiscovery !== undefined;

@@ -3,6 +3,31 @@ import type { ReleaseCycle } from "../endoflife/release-cycles.ts";
 // The AWS services awol reads Components from.
 export type Service = "RDS" | "ElastiCache" | "OpenSearch" | "Lambda";
 
+// The services awol can monitor, in the order the dashboard shows them, any
+// of which can be a Monitored service.
+export const SUPPORTED_SERVICES = ["RDS", "Aurora", "ElastiCache Redis OSS", "OpenSearch Service", "Lambda"] as const;
+
+// A service awol can monitor.
+export type SupportedService = (typeof SUPPORTED_SERVICES)[number];
+
+// How many resources of each of some supported services there are.
+export type SupportedCounts = Partial<Record<SupportedService, number>>;
+
+// The supported services of each AWS service a Scan reads.
+export const SUPPORTED_BY: Record<Service, SupportedService[]> = {
+  RDS: ["RDS", "Aurora"],
+  ElastiCache: ["ElastiCache Redis OSS"],
+  OpenSearch: ["OpenSearch Service"],
+  Lambda: ["Lambda"],
+};
+
+// The supported service a Component of `product`, read from AWS service
+// `service`, is of: Aurora clusters are Aurora's, and every other RDS
+// Component is RDS's.
+export function supportedServiceOf(service: Service, product: string): SupportedService {
+  return service === "RDS" && product.startsWith("amazon-aurora-") ? "Aurora" : SUPPORTED_BY[service][0]!;
+}
+
 // A Product awol reads from AWS: its name, its endoflife.date product, the
 // Release Cycle names a version could match, most specific first, and a
 // version as endoflife.date numbers Latest patches. A Product whose dates

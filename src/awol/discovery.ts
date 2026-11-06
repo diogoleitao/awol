@@ -1,15 +1,19 @@
 import { AwsCliError, type AwsRunner } from "../aws/runner.ts";
 import { type PartRead, resultOf, staleSince } from "../part-read.ts";
-import type { ComponentVersion, Service } from "./component.ts";
+import {
+  type ComponentVersion,
+  type Service,
+  SUPPORTED_BY,
+  SUPPORTED_SERVICES,
+  type SupportedCounts,
+  type SupportedService,
+  supportedServiceOf,
+} from "./component.ts";
 import { readElastiCacheVersions } from "./elasticache.ts";
 import { readLambdaComponents } from "./lambda.ts";
 import { readOpenSearchVersions } from "./opensearch.ts";
 import { readRdsVersions } from "./rds.ts";
 import { enabledRegions, mapConcurrently, readPart, REGION_CONCURRENCY, type Stale } from "./scan.ts";
-
-// The services Discovery counts that awol monitors, in the order the
-// dashboard shows them.
-export const SUPPORTED_SERVICES = ["RDS", "Aurora", "ElastiCache Redis OSS", "OpenSearch Service", "Lambda"] as const;
 
 // The versioned services Discovery counts that awol cannot monitor yet, in
 // the order the dashboard shows them.
@@ -29,7 +33,7 @@ export const UNSUPPORTED_SERVICES = [
 ] as const;
 
 // A service Discovery counts, supported or not.
-export type DiscoveredService = (typeof SUPPORTED_SERVICES)[number] | (typeof UNSUPPORTED_SERVICES)[number];
+export type DiscoveredService = SupportedService | (typeof UNSUPPORTED_SERVICES)[number];
 
 // The AWS services whose calls Discovery counts resources with. One AWS
 // service's calls can count several services: RDS's count Aurora, RDS
@@ -72,14 +76,6 @@ export type DiscoveryPart =
   | { kind: "presence"; awsService: AwsService; region: string }
   | { kind: "versions"; service: Service; region: string };
 
-// The supported services of each AWS service a Scan reads.
-const SUPPORTED_BY: Record<Service, DiscoveredService[]> = {
-  RDS: ["RDS", "Aurora"],
-  ElastiCache: ["ElastiCache Redis OSS"],
-  OpenSearch: ["OpenSearch Service"],
-  Lambda: ["Lambda"],
-};
-
 // The AWS services a Scan reads, in the order Discovery reads their
 // Components' versions in each region, without AWS's support dates or
 // offered versions, which Discovery does not show. A Lambda Component's
@@ -91,11 +87,9 @@ const VERSIONS: [Service, (aws: AwsRunner, region: string) => Promise<ComponentV
   ["Lambda", readLambdaComponents],
 ];
 
-// `component` as Discovery keeps it: Aurora clusters are Aurora's, and every
-// other RDS Component is RDS's.
+// `component` as Discovery keeps it, with the supported service it is of.
 function discoveredComponent({ service, product, identifier, version }: ComponentVersion): DiscoveredComponent {
-  const aurora = service === "RDS" && product.endOfLifeProduct.startsWith("amazon-aurora-");
-  return { service: aurora ? "Aurora" : SUPPORTED_BY[service][0]!, product: product.name, identifier, version };
+  return { service: supportedServiceOf(service, product.endOfLifeProduct), product: product.name, identifier, version };
 }
 
 // The services each AWS service's calls count.
@@ -358,6 +352,15 @@ export async function runDiscovery(
     stopped = true;
     throw error;
   }
+}
+
+// How many resources of each supported service of the AWS service `service`
+// has in `region`, zero included, by Discovery's calls. An AWS service with
+// no endpoint in the region has none there.
+export async function countSupportedIn(aws: AwsRunner, service: Service, region: string): Promise<SupportedCounts> {
+  const [, count] = PRESENCE.find(([awsService]) => awsService === service)!;
+  const counts = countsOf(await presenceIn(aws, region, count));
+  return Object.fromEntries(SUPPORTED_BY[service].map((supported) => [supported, counts[supported] ?? 0]));
 }
 
 // What `count` finds in `region`, or that its AWS service is not there.

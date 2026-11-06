@@ -138,10 +138,15 @@ export async function readRdsVersions(aws: AwsRunner, region: string): Promise<C
   }));
 }
 
-// The RDS Components in `region`, each with AWS's support dates for its AWS
-// major version there and the Newest offered version of its Product there.
-export async function readRdsComponents(aws: AwsRunner, region: string): Promise<ComponentReading[]> {
-  const components = await listDbComponents(aws, region);
+// The RDS Components in `region` of the Products `wanted`, each with AWS's
+// support dates for its AWS major version there and the Newest offered
+// version of its Product there. Nothing more is read for any other Product.
+export async function readRdsComponents(
+  aws: AwsRunner,
+  region: string,
+  wanted: (product: Product) => boolean,
+): Promise<ComponentReading[]> {
+  const components = (await listDbComponents(aws, region)).filter((component) => wanted(PRODUCTS[component.Engine]!));
 
   const lifecyclesByEngine = new Map<string, Map<string, SupportDates>>();
   const newestOfferedByEngine = new Map<string, string | undefined>();

@@ -1,10 +1,11 @@
-import { History, KeyRound } from "lucide-react";
+import { History, Info, KeyRound } from "lucide-react";
 import { connection } from "next/server";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import type { FailedPart, LastScan, ScanPart } from "../awol/page-model.ts";
+import type { FailedPart, LastScan, ScanPart, UnmonitoredService } from "../awol/page-model.ts";
 import { appAwol, discoveryRunning } from "./app-awol.ts";
 import { DiscoverySection } from "./discovery-section.tsx";
 import { formatTime } from "./format.ts";
+import { MonitoredServicesForm } from "./monitored-services-form.tsx";
 import { ScanButton } from "./scan-button.tsx";
 import { ScanTable } from "./scan-table.tsx";
 
@@ -39,9 +40,15 @@ export default async function DashboardPage() {
           <span className="text-muted-foreground">Last Scan</span>{" "}
           {model.lastScan === undefined ? "none yet" : formatTime(model.lastScan.ranAt)}
         </p>
-        <ScanButton />
+        {model.monitoredServices !== undefined && <ScanButton />}
       </div>
       <DiscoverySection discovery={model.discovery} running={discoveryRunning()} />
+      {model.discovery !== undefined && (
+        <MonitoredServicesForm
+          services={model.discovery.services.filter(({ supported }) => supported)}
+          monitored={model.monitoredServices}
+        />
+      )}
       {model.lastScan !== undefined && <ScanResult scan={model.lastScan} />}
     </div>
   );
@@ -50,9 +57,32 @@ export default async function DashboardPage() {
 function ScanResult({ scan }: { scan: LastScan }) {
   return (
     <>
+      {scan.unmonitoredServices.length > 0 && <UnmonitoredServices services={scan.unmonitoredServices} />}
       {scan.failedParts.length > 0 && <FailedParts parts={scan.failedParts} />}
       <ScanTable scan={scan} />
     </>
+  );
+}
+
+// The supported services the last Scan found resources of that are not
+// monitored, which awol never adds on its own.
+function UnmonitoredServices({ services }: { services: UnmonitoredService[] }) {
+  return (
+    <Alert className="max-w-4xl">
+      <Info />
+      <AlertTitle>The last Scan found resources of services you do not monitor</AlertTitle>
+      <AlertDescription>
+        <ul>
+          {services.map(({ service, count }) => (
+            <li key={service}>
+              <span className="font-medium text-foreground">{service}</span>:{" "}
+              <span className="tabular-nums">{count}</span> {count === 1 ? "resource" : "resources"}
+            </li>
+          ))}
+        </ul>
+        <p>Choose them under Monitored services for a Scan to read them.</p>
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -86,6 +116,7 @@ function FailedParts({ parts }: { parts: FailedPart[] }) {
 function partName(part: ScanPart): string {
   if (part.kind === "regions") return "The account's regions:";
   if (part.kind === "service") return `${part.service} in ${part.region}:`;
+  if (part.kind === "unmonitored") return `${part.service} resources not monitored in ${part.region}:`;
   return `endoflife.date's ${part.product}:`;
 }
 
@@ -93,5 +124,6 @@ function partName(part: ScanPart): string {
 function neverRead(part: ScanPart): string {
   if (part.kind === "regions") return "never read, so no region was read.";
   if (part.kind === "service") return "never read, so none of its Components are shown.";
+  if (part.kind === "unmonitored") return "never read, so the services not monitored there are not noted.";
   return "never read, so its Components are Untracked.";
 }
