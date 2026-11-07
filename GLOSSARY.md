@@ -88,4 +88,4 @@ The most recent version AWS currently offers for a Component's Product in the Co
 _Avoid_: Latest available, default version
 
 **Drift**:
-How far a Component's version is behind the Latest patch, the Newest cycle, and the Newest offered version. Drift is shown alongside Status and never changes it.
+How far a Component's version is behind the Latest patch, the Newest cycle, and the Newest offered version. Drift never changes Status.

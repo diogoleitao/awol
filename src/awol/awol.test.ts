@@ -8,7 +8,18 @@ import { type AwsRunner, awsCliError } from "../aws/runner.ts";
 import type { EndOfLifeFetcher } from "../endoflife/fetcher.ts";
 import { openAwol, type Progress } from "./awol.ts";
 import { SUPPORTED_SERVICES } from "./component.ts";
-import { type DashboardView, dashboardViewOf, filterOptionsOf, INITIAL_TABLE_STATE, NO_FILTERS, nextSort } from "./dashboard-view.ts";
+import { componentAt, componentPathOf } from "./component-page.ts";
+import {
+  type DashboardView,
+  dashboardViewOf,
+  filterOptionsOf,
+  INITIAL_TABLE_STATE,
+  NO_FILTERS,
+  nextSort,
+  searchParamsOf,
+  type TableState,
+  tableStateOf,
+} from "./dashboard-view.ts";
 import { nextStepOf } from "./next-step.ts";
 import type { DiscoveryResult, LastScan, SignedIn } from "./page-model.ts";
 import { topBarOf } from "./top-bar.ts";
@@ -2670,29 +2681,6 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
     expectOnlyJsonReads(aws);
   });
 
-  it("sorts by Release Cycle number, with no Release Cycle last", async () => {
-    const { lastScan, aws } = await scannedAccount();
-
-    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, sort: { column: "releaseCycle", direction: "ascending" } });
-
-    expect(groupsOf(view)).toEqual([
-      {
-        identifiers: [
-          "db-1",
-          "db-6",
-          "db-2",
-          "db-3",
-          "db-4",
-          "db-5",
-          "function-9:$LATEST",
-          "function-6:$LATEST",
-          "function-1:$LATEST",
-        ],
-      },
-    ]);
-    expectOnlyJsonReads(aws);
-  });
-
   it("sorts by Status in Status order, or in reverse, keeping Urgency order within each Status", async () => {
     const { lastScan, aws } = await scannedAccount();
 
@@ -2800,6 +2788,73 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
     ]);
     expectOnlyJsonReads(aws);
   });
+
+  it("keeps the filters, search, grouping, sort and page in the URL, and reads them back from it", () => {
+    const state: TableState = {
+      filters: { services: ["RDS", "Lambda"], products: ["RDS PostgreSQL"], regions: ["eu-west-1"], statuses: ["AWOL", "Falling behind"] },
+      search: "db 14",
+      grouped: true,
+      sort: { column: "endOfLife", direction: "descending" },
+      page: { index: 1, size: 50 },
+    };
+
+    const query = searchParamsOf(state).toString();
+
+    expect(query).toBe(
+      "services=RDS&services=Lambda&products=RDS+PostgreSQL&regions=eu-west-1&statuses=AWOL&statuses=Falling+behind&search=db+14&grouped=true&sort=endOfLife&direction=descending&page=2&size=50",
+    );
+    expect(tableStateOf(new URLSearchParams(query))).toEqual(state);
+  });
+
+  it("keeps nothing in the URL for the table as it is at first", () => {
+    expect(searchParamsOf(INITIAL_TABLE_STATE).toString()).toBe("");
+    expect(tableStateOf(new URLSearchParams())).toEqual(INITIAL_TABLE_STATE);
+  });
+
+  it("reads each part of the URL that is not one the table offers as that part at first", () => {
+    const unknownValues = tableStateOf(
+      new URLSearchParams(
+        "services=EKS&services=constructor&services=RDS&statuses=Dead&statuses=AWOL&grouped=yes&sort=extendedSupportEnd&direction=ascending&page=0&size=30",
+      ),
+    );
+    const unknownDirection = tableStateOf(new URLSearchParams("sort=region&direction=sideways"));
+    const notWholeNumbers = tableStateOf(new URLSearchParams("page=1.5&size=fifty"));
+
+    expect(unknownValues).toEqual({ ...INITIAL_TABLE_STATE, filters: { ...NO_FILTERS, services: ["RDS"], statuses: ["AWOL"] } });
+    expect(unknownDirection).toEqual(INITIAL_TABLE_STATE);
+    expect(notWholeNumbers).toEqual(INITIAL_TABLE_STATE);
+  });
+
+  it("gives each Component a page of its own, found again in the last Scan from that page's path", async () => {
+    const { lastScan, aws } = await scannedAccount();
+    const component = (identifier: string) => lastScan.components.find((other) => other.identifier === identifier)!;
+
+    const instancePath = componentPathOf(component("db-6"));
+    const functionPath = componentPathOf(component("function-6:$LATEST"));
+
+    expect(instancePath).toBe("/components/RDS/us-east-1/db-6");
+    expect(functionPath).toBe("/components/Lambda/eu-west-1/function-6%3A%24LATEST");
+    expect(componentAt(lastScan, paramsOf(instancePath))).toBe(component("db-6"));
+    expect(componentAt(lastScan, paramsOf(functionPath))).toBe(component("function-6:$LATEST"));
+    expectOnlyJsonReads(aws);
+  });
+
+  it("finds no Component for a page whose service, region or identifier no Component of the last Scan has", async () => {
+    const { lastScan, aws } = await scannedAccount();
+
+    expect(componentAt(lastScan, { service: "RDS", region: "eu-west-1", identifier: "db-99" })).toBeUndefined();
+    expect(componentAt(lastScan, { service: "RDS", region: "eu-west-1", identifier: "db-6" })).toBeUndefined();
+    expect(componentAt(lastScan, { service: "Lambda", region: "us-east-1", identifier: "db-6" })).toBeUndefined();
+    expect(componentAt(lastScan, { service: "RDS", region: "us-east-1", identifier: "db-6%E0" })).toBeUndefined();
+    expectOnlyJsonReads(aws);
+  });
+
+  // The service, region and identifier of a Component's page at `path`, as
+  // Next passes them to the page: still encoded.
+  function paramsOf(path: string) {
+    const [service, region, identifier] = path.split("/").slice(2) as [string, string, string];
+    return { service, region, identifier };
+  }
 
   it("offers to filter on the services, Products and regions of the last Scan's Components, in alphabetical order, and on every Status", async () => {
     const { lastScan, aws } = await scannedAccount();

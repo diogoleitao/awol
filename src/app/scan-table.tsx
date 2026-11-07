@@ -1,8 +1,9 @@
 "use client";
 
-import { Activity, ArrowDown, ArrowUp, Globe, History, Package, Server, TriangleAlert, X } from "lucide-react";
-import { type ReactNode, useState } from "react";
-import { Badge } from "@/components/ui/badge";
+import { Activity, ArrowDown, ArrowUp, Globe, Package, Server, X } from "lucide-react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { type ReactNode, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
@@ -11,56 +12,47 @@ import {
   dashboardViewOf,
   type Filters,
   filterOptionsOf,
-  INITIAL_TABLE_STATE,
   NO_FILTERS,
   nextSort,
   PAGE_SIZES,
   type Sort,
   type SortColumn,
+  searchParamsOf,
   type TableState,
+  tableStateOf,
+  withQuery,
 } from "../awol/dashboard-view.ts";
-import type { ComponentDrift, ComponentRow, Drift, LastScan, SupportDates } from "../awol/page-model.ts";
+import { componentPathOf } from "../awol/component-page.ts";
+import type { ComponentRow, LastScan } from "../awol/page-model.ts";
 import { STATUSES, type Status } from "../awol/status.ts";
 import { CollapsibleCard } from "./collapsible-card.tsx";
-import { formatTime } from "./format.ts";
+import { DateWithSources, StatusCell } from "./component-cells.tsx";
 import { SidebarLayout, type SidebarSection } from "./sidebar-layout.tsx";
 
-// One of the table's columns: its heading, the column it sorts on, if it
-// sorts, and what its cell shows for a Component.
-type Column = { heading: string; sortsOn?: SortColumn; className?: string; cell: (component: ComponentRow) => ReactNode };
+// One of the table's columns: its heading, the column it sorts on, and what
+// its cell shows for a Component, with `query`, the table's state as its URL
+// keeps it.
+type Column = { heading: string; sortsOn: SortColumn; className?: string; cell: (component: ComponentRow, query: string) => ReactNode };
 
+// The essential columns; a Component's page shows the rest.
 const TABLE_COLUMNS: Column[] = [
-  { heading: "Service", sortsOn: "service", cell: (component) => component.service },
+  {
+    heading: "Identifier",
+    sortsOn: "identifier",
+    className: "font-mono",
+    // Not prefetched, so that a page of the table, and its sizing row with
+    // every Component, does not read the page model once per Component.
+    cell: (component, query) => (
+      <Link href={withQuery(componentPathOf(component), query)} prefetch={false} className="underline underline-offset-4">
+        {component.identifier}
+      </Link>
+    ),
+  },
   { heading: "Product", sortsOn: "product", cell: (component) => component.product },
   { heading: "Region", sortsOn: "region", cell: (component) => component.region },
-  { heading: "Identifier", sortsOn: "identifier", className: "font-mono", cell: (component) => component.identifier },
   { heading: "Version", sortsOn: "version", className: "font-mono", cell: (component) => component.version },
-  { heading: "Release Cycle", sortsOn: "releaseCycle", className: "font-mono", cell: (component) => component.releaseCycle },
   { heading: "Status", sortsOn: "status", cell: (component) => <StatusCell component={component} /> },
-  { heading: "Drift", cell: (component) => <DriftFigures drift={component.drift} /> },
-  { heading: "Cycle released", sortsOn: "cycleReleaseDate", cell: (component) => component.cycleReleaseDate },
-  { heading: "Active support ends", sortsOn: "activeSupportEnd", cell: (component) => component.activeSupportEnd },
-  {
-    heading: "End of life",
-    sortsOn: "endOfLife",
-    cell: (component) => (
-      <>
-        <EndOfLife component={component} />
-        <SourceDates component={component} field="endOfLife" />
-      </>
-    ),
-  },
-  {
-    heading: "Extended Support ends",
-    sortsOn: "extendedSupportEnd",
-    cell: (component) => (
-      <>
-        {component.extendedSupportEnd}
-        <SourceDates component={component} field="extendedSupportEnd" />
-      </>
-    ),
-  },
-  { heading: "At End of life", sortsOn: "extendedSupport", cell: (component) => component.extendedSupport },
+  { heading: "End of life", sortsOn: "endOfLife", cell: (component) => <DateWithSources component={component} field="endOfLife" /> },
 ];
 
 const COLUMNS = TABLE_COLUMNS.length;
@@ -78,12 +70,23 @@ const FILTER_SECTIONS = {
 // with a sidebar of its filters, filtered, searched, grouped, sorted and
 // paged in the browser, so that none of it reads AWS. Any change but a page
 // goes back to the first page; a live update keeps the page.
+//
+// The page's URL keeps the table's state, replaced on each change rather
+// than added to the history, so that going back to the dashboard, as from a
+// Component's page, reloading it or opening a link to it shows the table as
+// it was.
 export function ScanTable({ scan, children }: { scan: LastScan; children?: ReactNode }) {
-  const [state, setState] = useState<TableState>(INITIAL_TABLE_STATE);
+  const searchParams = useSearchParams();
+  const [state, setState] = useState<TableState>(() => tableStateOf(searchParams));
   const { filters, search, grouped, sort, page } = state;
+  const query = searchParamsOf(state).toString();
   const options = filterOptionsOf(scan);
   const view = dashboardViewOf(scan, state);
   const anyChosen = Object.values(filters).some((chosen) => chosen.length > 0);
+
+  useEffect(() => {
+    window.history.replaceState(null, "", withQuery(window.location.pathname, query));
+  }, [query]);
 
   // A live update that leaves fewer pages moves the table to the last one,
   // so that a later one with more does not move it back.
@@ -196,22 +199,18 @@ export function ScanTable({ scan, children }: { scan: LastScan; children?: React
           <Table>
             <TableHeader>
               <TableRow>
-                {TABLE_COLUMNS.map(({ heading, sortsOn }) =>
-                  sortsOn === undefined ? (
-                    <TableHead key={heading}>{heading}</TableHead>
-                  ) : (
-                    <SortableHead
-                      key={heading}
-                      heading={heading}
-                      direction={sort?.column === sortsOn ? sort.direction : undefined}
-                      onClick={() => change(({ sort }) => ({ sort: nextSort(sort, sortsOn) }))}
-                    />
-                  ),
-                )}
+                {TABLE_COLUMNS.map(({ heading, sortsOn }) => (
+                  <SortableHead
+                    key={heading}
+                    heading={heading}
+                    direction={sort?.column === sortsOn ? sort.direction : undefined}
+                    onClick={() => change(({ sort }) => ({ sort: nextSort(sort, sortsOn) }))}
+                  />
+                ))}
               </TableRow>
             </TableHeader>
             <TableBody>
-              <SizingRow components={scan.components} />
+              <SizingRow components={scan.components} query={query} />
               {view.groups.every((group) => group.components.length === 0) && (
                 <TableRow>
                   <TableCell colSpan={COLUMNS} className="text-muted-foreground">
@@ -220,7 +219,7 @@ export function ScanTable({ scan, children }: { scan: LastScan; children?: React
                 </TableRow>
               )}
               {view.groups.map((group) => (
-                <Group key={group.key} group={group} grouped={grouped} />
+                <Group key={group.key} group={group} grouped={grouped} query={query} />
               ))}
             </TableBody>
           </Table>
@@ -339,7 +338,7 @@ function ToggleButton({
 
 // A group's rows on the page, under a row naming its Product and Release
 // Cycle and how many Components it has on every page when grouped.
-function Group({ group, grouped }: { group: ComponentGroup; grouped: boolean }) {
+function Group({ group, grouped, query }: { group: ComponentGroup; grouped: boolean; query: string }) {
   const { count } = group;
   return (
     <>
@@ -360,7 +359,7 @@ function Group({ group, grouped }: { group: ComponentGroup; grouped: boolean }) 
         </TableRow>
       )}
       {group.components.map((component) => (
-        <ComponentTableRow key={keyOf(component)} component={component} />
+        <ComponentTableRow key={keyOf(component)} component={component} query={query} />
       ))}
     </>
   );
@@ -373,14 +372,14 @@ function keyOf(component: ComponentRow): string {
 // A row with no height that holds every Component of the last Scan in each
 // column, so that each column is as wide as its widest cell on any page and
 // keeps its width from page to page.
-function SizingRow({ components }: { components: ComponentRow[] }) {
+function SizingRow({ components, query }: { components: ComponentRow[]; query: string }) {
   return (
     <TableRow aria-hidden className="border-0 hover:bg-transparent">
       {TABLE_COLUMNS.map(({ heading, className, cell }) => (
         <TableCell key={heading} className={cn("py-0", className)}>
           <div className="invisible h-0 overflow-hidden">
             {components.map((component) => (
-              <div key={keyOf(component)}>{cell(component)}</div>
+              <div key={keyOf(component)}>{cell(component, query)}</div>
             ))}
           </div>
         </TableCell>
@@ -389,95 +388,19 @@ function SizingRow({ components }: { components: ComponentRow[] }) {
   );
 }
 
-// One Component's row: its Status with any Stale or disagreeing sources
-// marked, its Drift, and the dates of its Release Cycle.
-function ComponentTableRow({ component }: { component: ComponentRow }) {
+// One Component's row: its essential columns, with its identifier a link to
+// its page.
+function ComponentTableRow({ component, query }: { component: ComponentRow; query: string }) {
   return (
     <TableRow>
       {TABLE_COLUMNS.map(({ heading, className, cell }) => (
         <TableCell key={heading} className={className}>
-          {cell(component)}
+          {cell(component, query)}
         </TableCell>
       ))}
     </TableRow>
   );
 }
-
-function StatusCell({ component }: { component: ComponentRow }) {
-  return (
-    <div className="flex flex-col items-start gap-1">
-      <StatusBadge status={component.status} />
-      {component.stale !== undefined && (
-        <Badge variant="outline" className="border-sky-600 text-sky-700 dark:text-sky-400">
-          <History />
-          Stale since {formatTime(component.stale.lastReadAt)}
-        </Badge>
-      )}
-      {component.datesDisagree && (
-        <Badge variant="outline" className="border-amber-500 text-amber-700 dark:text-amber-400">
-          <TriangleAlert />
-          Sources disagree
-        </Badge>
-      )}
-    </div>
-  );
-}
-
-function EndOfLife({ component }: { component: ComponentRow }) {
-  if (component.endOfLife !== undefined) return component.endOfLife;
-  if (component.status === "Current") return <span className="text-muted-foreground">End of life not announced</span>;
-  return null;
-}
-
-// Each source's own date for `field`, under the one that decides Status, for
-// the sources that give one.
-function SourceDates({ component, field }: { component: ComponentRow; field: keyof SupportDates }) {
-  const dates = Object.entries(component.sources).flatMap(([source, dates]) =>
-    dates[field] === undefined ? [] : [{ source, date: dates[field] }],
-  );
-  if (dates.length === 0) return null;
-  return (
-    <ul className="text-xs text-muted-foreground">
-      {dates.map(({ source, date }) => (
-        <li key={source}>
-          {source === "aws" ? "AWS" : source} {date}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-const DRIFT_FIGURES: [keyof ComponentDrift, string][] = [
-  ["latestPatch", "Latest patch"],
-  ["newestCycle", "Newest cycle"],
-  ["newestOffered", "Newest offered"],
-];
-
-// Each Drift figure: the version the Component is behind, or that it has no
-// Drift there, or that the figure is not available.
-function DriftFigures({ drift }: { drift: ComponentDrift }) {
-  return (
-    <ul className="text-xs">
-      {DRIFT_FIGURES.map(([figure, label]) => (
-        <li key={figure}>
-          <span className="text-muted-foreground">{label}</span> <DriftValue drift={drift[figure]} />
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function DriftValue({ drift }: { drift: Drift }) {
-  if (drift.kind === "behind") return <span className="font-mono">{drift.version}</span>;
-  return <span className="text-muted-foreground">{drift.kind === "none" ? "no Drift" : "not available"}</span>;
-}
-
-const STATUS_CLASSES: Record<Status, string> = {
-  AWOL: "border-transparent bg-destructive text-white",
-  "Falling behind": "border-transparent bg-amber-500 text-black",
-  Current: "border-transparent bg-emerald-600 text-white",
-  Untracked: "text-muted-foreground",
-};
 
 // Each Status count's tile as a neon sign on a dark tile, its border and
 // text lit and glowing in its Status's color, or unlit, dim grey, for
@@ -490,11 +413,3 @@ const STATUS_TILE_CLASSES: Record<Status, string> = {
     "border-emerald-400 text-emerald-300 shadow-[0_0_8px_#34d399,0_0_24px_#34d39980,inset_0_0_12px_#34d39966] [text-shadow:0_0_6px_#34d399,0_0_18px_#34d399]",
   Untracked: "border-zinc-700 text-zinc-500",
 };
-
-function StatusBadge({ status }: { status: Status }) {
-  return (
-    <Badge variant="outline" className={STATUS_CLASSES[status]}>
-      {status}
-    </Badge>
-  );
-}

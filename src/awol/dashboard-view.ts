@@ -1,4 +1,4 @@
-import type { Service } from "./component.ts";
+import { type Service, SUPPORTED_BY } from "./component.ts";
 import type { ComponentRow, LastScan } from "./page-model.ts";
 import { countsOf, STATUSES, type Status } from "./status.ts";
 
@@ -29,20 +29,10 @@ export function filterOptionsOf(scan: LastScan): Filters {
 // and search, and how many Components it has on every page.
 export type ComponentGroup = { key: string; product?: string; releaseCycle?: string; count: number; components: ComponentRow[] };
 
-// The columns the dashboard's table sorts on: every column but Drift.
-export type SortColumn =
-  | "service"
-  | "product"
-  | "region"
-  | "identifier"
-  | "version"
-  | "releaseCycle"
-  | "status"
-  | "cycleReleaseDate"
-  | "activeSupportEnd"
-  | "endOfLife"
-  | "extendedSupportEnd"
-  | "extendedSupport";
+// The columns the dashboard's table sorts on: every column it shows.
+export const SORT_COLUMNS = ["identifier", "product", "region", "version", "status", "endOfLife"] as const;
+
+export type SortColumn = (typeof SORT_COLUMNS)[number];
 
 // A column to sort the dashboard's table on, and which way. No sort is
 // Urgency order.
@@ -68,6 +58,66 @@ export type Page = { index: number; size: PageSize };
 export type TableState = { filters: Filters; search: string; grouped: boolean; sort?: Sort; page: Page };
 
 export const INITIAL_TABLE_STATE: TableState = { filters: NO_FILTERS, search: "", grouped: false, page: { index: 0, size: 25 } };
+
+// `state` as the dashboard's URL keeps it: each chosen filter value, the
+// search, grouping, the sort and its direction, the page, counted from 1,
+// and its size, leaving out each that is as it is at first.
+export function searchParamsOf({ filters, search, grouped, sort, page }: TableState): URLSearchParams {
+  const params = new URLSearchParams();
+  for (const [column, chosen] of Object.entries(filters)) for (const value of chosen) params.append(column, value);
+  if (search !== "") params.set("search", search);
+  if (grouped) params.set("grouped", "true");
+  if (sort !== undefined) {
+    params.set("sort", sort.column);
+    params.set("direction", sort.direction);
+  }
+  if (page.index > 0) params.set("page", String(page.index + 1));
+  if (page.size !== INITIAL_TABLE_STATE.page.size) params.set("size", String(page.size));
+  return params;
+}
+
+// The state the dashboard's URL `params` keep, as `searchParamsOf` keeps it,
+// with each part the table does not offer, such as an unknown Status or
+// page size, as it is at first.
+export function tableStateOf(params: URLSearchParams): TableState {
+  const column = oneOf(SORT_COLUMNS, params.get("sort"));
+  const direction = oneOf(DIRECTIONS, params.get("direction"));
+  const page = Number(params.get("page"));
+  return {
+    filters: {
+      services: params.getAll("services").filter((service) => isOneOf(SERVICES, service)),
+      products: params.getAll("products"),
+      regions: params.getAll("regions"),
+      statuses: params.getAll("statuses").filter((status) => isOneOf(STATUSES, status)),
+    },
+    search: params.get("search") ?? "",
+    grouped: params.get("grouped") === "true",
+    ...(column !== undefined && direction !== undefined && { sort: { column, direction } }),
+    page: {
+      index: Number.isInteger(page) && page > 1 ? page - 1 : 0,
+      size: oneOf(PAGE_SIZES, Number(params.get("size"))) ?? INITIAL_TABLE_STATE.page.size,
+    },
+  };
+}
+
+// `path` with `query`, a URL's query string without its `?`, if there is one.
+export function withQuery(path: string, query: string): string {
+  return query === "" ? path : `${path}?${query}`;
+}
+
+const SERVICES = Object.keys(SUPPORTED_BY) as Service[];
+
+const DIRECTIONS = ["ascending", "descending"] as const;
+
+// Whether `value` is one of `values`.
+function isOneOf<T>(values: readonly T[], value: unknown): value is T {
+  return values.includes(value as T);
+}
+
+// `value` if it is one of `values`.
+function oneOf<T>(values: readonly T[], value: unknown): T | undefined {
+  return isOneOf(values, value) ? value : undefined;
+}
 
 // The last Scan as the dashboard's table shows it: how many values are
 // chosen in each filter, how many of the Components that pass the filters
@@ -149,22 +199,15 @@ function compareOn({ column, direction }: Sort): (a: ComponentRow, b: ComponentR
 }
 
 // How each column orders two values: Status in Status order, from AWOL to
-// Untracked, versions and Release Cycles by their numbers, so 8.0.40 comes
-// before 8.0.100 and python3.8 before python3.12, and text, and dates with
-// it, alphabetically.
+// Untracked, versions by their numbers, so 8.0.40 comes before 8.0.100 and
+// python3.8 before python3.12, and text, and dates with it, alphabetically.
 const COMPARE: Record<SortColumn, (a: string, b: string) => number> = {
-  service: alphabetically,
+  identifier: alphabetically,
   product: alphabetically,
   region: alphabetically,
-  identifier: alphabetically,
   version: byNumbers,
-  releaseCycle: byNumbers,
   status: (a, b) => STATUSES.indexOf(a as Status) - STATUSES.indexOf(b as Status),
-  cycleReleaseDate: alphabetically,
-  activeSupportEnd: alphabetically,
   endOfLife: alphabetically,
-  extendedSupportEnd: alphabetically,
-  extendedSupport: alphabetically,
 };
 
 function byNumbers(a: string, b: string): number {
