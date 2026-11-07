@@ -10,7 +10,7 @@ import awsLambda from "../awol/fixtures/endoflife/aws-lambda.json" with { type: 
 import { type AwsRunner, awsCliError } from "../aws/runner.ts";
 import type { ServerRecord } from "../data/server-record.ts";
 import type { EndOfLifeFetcher } from "../endoflife/fetcher.ts";
-import { runCli } from "./run.ts";
+import { type Key, runCli } from "./run.ts";
 
 // Stands in for the Next.js server: answers every request on the port it is
 // given, on 127.0.0.1.
@@ -76,6 +76,9 @@ async function cli(
     color = false,
     answer = "",
     asked = [],
+    pressed = [],
+    screens = [],
+    keyboard = { closed: false },
   }: {
     serverArgs?: string[];
     startTimeoutMs?: number;
@@ -87,6 +90,13 @@ async function cli(
     color?: boolean;
     answer?: string;
     asked?: string[];
+    // The keys pressed on the terminal, in order, and where to keep what
+    // was on stdout's screen as each was about to be pressed.
+    pressed?: Key[];
+    screens?: string[][];
+    // Whether no more keys were wanted, as the terminal leaves raw mode
+    // then.
+    keyboard?: { closed: boolean };
   } = {},
 ) {
   let stdout = "";
@@ -110,8 +120,34 @@ async function cli(
       asked.push(question);
       return answer;
     },
+    keys: async function* () {
+      try {
+        for (const key of pressed) {
+          screens.push(screenOf(stdout));
+          yield key;
+        }
+      } finally {
+        keyboard.closed = true;
+      }
+    },
   });
   return { code, stdout, stderr, opened };
+}
+
+// What `output` leaves on a terminal's screen, line by line, without its
+// colors: text drawn, lines ended, the cursor moved up, back to the start of
+// its line, and everything from it on cleared.
+function screenOf(output: string): string[] {
+  const lines: string[] = [];
+  let row = 0;
+  for (const token of output.replaceAll(/\x1b\[\d+m/g, "").split(/(\n|\r|\x1b\[\d+A|\x1b\[J)/)) {
+    if (token === "\n") lines[row++] ??= "";
+    else if (token === "\r") continue;
+    else if (token === "\x1b[J") lines.splice(row);
+    else if (token.startsWith("\x1b[")) row -= Number(token.slice(2, -1));
+    else if (token !== "") lines[row] = (lines[row] ?? "") + token;
+  }
+  return lines;
 }
 
 const CALLER_IDENTITY = "sts get-caller-identity --output json";
@@ -166,7 +202,7 @@ const fakeEndOfLife: EndOfLifeFetcher = async (target) => {
   return { status: 200, etag: '"lambda"', body: JSON.stringify(awsLambda) };
 };
 
-const USAGE = "usage: awol start | awol stop | awol discover [--failed] [--force] | awol scan [--force]";
+const USAGE = "usage: awol start | awol stop | awol discover [--failed] [--force] | awol scan [--force] | awol monitor";
 
 // Writes the lock of a Scan of the account held by `pid`, started by
 // `startedBy`.
@@ -656,7 +692,12 @@ describe("awol scan", () => {
 
     const result = await cli(["scan"], { aws, terminal: ON_A_TERMINAL, answer });
 
-    expect(result).toEqual({ code: 1, stdout: "", stderr: "awol: choose Monitored services in the dashboard first\n", opened: [] });
+    expect(result).toEqual({
+      code: 1,
+      stdout: "",
+      stderr: "awol: choose Monitored services with awol monitor or in the dashboard first\n",
+      opened: [],
+    });
     expect(aws.calls).toEqual([CALLER_IDENTITY]);
   });
 
@@ -667,7 +708,12 @@ describe("awol scan", () => {
     const result = await cli(["scan"], { aws, terminal: { stdin: false, stdout: true, stderr: true }, answer: "y", asked });
 
     expect(asked).toEqual([]);
-    expect(result).toEqual({ code: 1, stdout: "", stderr: "awol: choose Monitored services in the dashboard first\n", opened: [] });
+    expect(result).toEqual({
+      code: 1,
+      stdout: "",
+      stderr: "awol: choose Monitored services with awol monitor or in the dashboard first\n",
+      opened: [],
+    });
     expect(aws.calls).toEqual([CALLER_IDENTITY]);
   });
 
@@ -848,5 +894,239 @@ describe("--force", () => {
     for (const argv of [["scan", "--force", "--force"], ["discover", "--failed", "--force", "--failed"], ["scan", "--failed"]]) {
       expect(await cli(argv), argv.join(" ")).toEqual({ code: 2, stdout: "", stderr: `${USAGE}\n`, opened: [] });
     }
+  });
+});
+
+describe("awol monitor", () => {
+  const ON_A_TERMINAL = { stdin: true, stdout: true, stderr: false };
+
+  // The checklist as it starts, after a Discovery that found the Lambda
+  // function function-6 and nothing else, with Lambda the one Monitored
+  // service.
+  const CHECKLIST = [
+    "Choose Monitored services:",
+    "> [ ] Aurora                 0 resources",
+    "  [ ] ElastiCache Redis OSS  0 resources",
+    "  [x] Lambda                 1 resource",
+    "  [ ] OpenSearch Service     0 resources",
+    "  [ ] RDS                    0 resources",
+    "↑/↓ move · space toggle · enter save · esc quit",
+  ];
+
+  // The account after a Discovery, with Lambda as its one Monitored service.
+  async function discoveredMonitoringLambda() {
+    const awol = awolWith(fakeAws());
+    expect((await awol.discover()).kind).toBe("discovered");
+    expect(await awol.setMonitoredServices(["Lambda"])).toEqual({ kind: "saved" });
+  }
+
+  async function monitoredServices() {
+    const model = await awolWith(fakeAws()).pageModel();
+    return model.kind === "signed-in" ? model.monitoredServices : model;
+  }
+
+  it("lists every supported service with its resources, the Monitored services ticked, and saves the ticked ones on enter", async () => {
+    await discoveredMonitoringLambda();
+    const screens: string[][] = [];
+
+    const result = await cli(["monitor"], { terminal: ON_A_TERMINAL, pressed: ["space", "enter"], screens });
+
+    expect(screens[0]).toEqual(CHECKLIST);
+    expect(screenOf(result.stdout)).toEqual(["Monitoring", "  ✔ Aurora", "  ✔ Lambda"]);
+    expect(result).toMatchObject({ code: 0, stderr: "", opened: [] });
+    expect(await monitoredServices()).toEqual(["Aurora", "Lambda"]);
+  });
+
+  it("moves between rows with up and down, stopping at the first and the last, and toggles the row it is on", async () => {
+    await discoveredMonitoringLambda();
+    const screens: string[][] = [];
+    const down = Array<Key>(6).fill("down");
+
+    const result = await cli(["monitor"], { terminal: ON_A_TERMINAL, pressed: ["up", "down", "down", "space", ...down, "space", "up", "enter"], screens });
+
+    expect(screens[1]).toEqual(CHECKLIST);
+    expect(screens[3]!.slice(1, 6)).toEqual([
+      "  [ ] Aurora                 0 resources",
+      "  [ ] ElastiCache Redis OSS  0 resources",
+      "> [x] Lambda                 1 resource",
+      "  [ ] OpenSearch Service     0 resources",
+      "  [ ] RDS                    0 resources",
+    ]);
+    expect(screens.at(-2)!.slice(1, 6)).toEqual([
+      "  [ ] Aurora                 0 resources",
+      "  [ ] ElastiCache Redis OSS  0 resources",
+      "  [ ] Lambda                 1 resource",
+      "  [ ] OpenSearch Service     0 resources",
+      "> [x] RDS                    0 resources",
+    ]);
+    expect(result.code).toBe(0);
+    expect(await monitoredServices()).toEqual(["RDS"]);
+  });
+
+  it("keeps the checklist open on enter with nothing ticked, saying to choose one until one is ticked", async () => {
+    await discoveredMonitoringLambda();
+    const screens: string[][] = [];
+
+    const result = await cli(["monitor"], {
+      terminal: ON_A_TERMINAL,
+      pressed: ["down", "down", "space", "enter", "down", "space", "enter"],
+      screens,
+    });
+
+    expect(screens[4]!.slice(6)).toEqual(["Choose at least one service", "↑/↓ move · space toggle · enter save · esc quit"]);
+    expect(screens[5]!.slice(6)).toEqual(["Choose at least one service", "↑/↓ move · space toggle · enter save · esc quit"]);
+    expect(screens[6]!.slice(6)).toEqual(["↑/↓ move · space toggle · enter save · esc quit"]);
+    expect(screenOf(result.stdout)).toEqual(["Monitoring", "  ✔ OpenSearch Service"]);
+    expect(await monitoredServices()).toEqual(["OpenSearch Service"]);
+  });
+
+  it("saves nothing on enter when the ticked services are the Monitored services already, and says what they are", async () => {
+    await discoveredMonitoringLambda();
+    const aws = fakeAws();
+
+    const result = await cli(["monitor"], { aws, terminal: ON_A_TERMINAL, pressed: ["space", "space", "enter"] });
+
+    expect(screenOf(result.stdout)).toEqual(["Monitoring", "  ✔ Lambda"]);
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(aws.calls).toEqual([CALLER_IDENTITY]);
+  });
+
+  it.each<[Key, number, string]>([
+    ["escape", 1, "awol: nothing saved\n"],
+    ["q", 1, "awol: nothing saved\n"],
+    ["ctrl-c", 130, ""],
+  ])("saves nothing on %s, leaving nothing on the screen, and exits %i", async (key, code, stderr) => {
+    await discoveredMonitoringLambda();
+    const aws = fakeAws();
+
+    const result = await cli(["monitor"], { aws, terminal: ON_A_TERMINAL, pressed: ["space", key, "enter"] });
+
+    expect(screenOf(result.stdout)).toEqual([]);
+    expect(result).toMatchObject({ code, stderr });
+    expect(aws.calls).toEqual([CALLER_IDENTITY]);
+  });
+
+  it.each<[string, Key[]]>([
+    ["saved", ["space", "enter"]],
+    ["unchanged", ["enter"]],
+    ["escape", ["escape"]],
+    ["q", ["q"]],
+    ["ctrl-c", ["ctrl-c"]],
+  ])("wants no more keys once it ends, %s, so the terminal leaves raw mode", async (_, pressed) => {
+    await discoveredMonitoringLambda();
+    const keyboard = { closed: false };
+
+    await cli(["monitor"], { terminal: ON_A_TERMINAL, pressed: [...pressed, "down"], keyboard });
+
+    expect(keyboard.closed).toBe(true);
+  });
+
+  it("wants no more keys when credentials expire on saving", async () => {
+    await discoveredMonitoringLambda();
+    const valid = fakeAws();
+    const expired = fakeAws({ [CALLER_IDENTITY]: { stderr: EXPIRED } });
+    let calls = 0;
+    const keyboard = { closed: false };
+
+    const result = await cli(["monitor"], {
+      aws: (argv) => (calls++ < 1 ? valid : expired)(argv),
+      terminal: ON_A_TERMINAL,
+      pressed: ["space", "enter", "down"],
+      keyboard,
+    });
+
+    expect(result.code).toBe(1);
+    expect(keyboard.closed).toBe(true);
+  });
+
+  it.each([
+    ["stdin", { stdin: false, stdout: true, stderr: true }],
+    ["stdout", { stdin: true, stdout: false, stderr: true }],
+  ])("refuses when %s is not a terminal, reading nothing, and exits 1", async (_, terminal) => {
+    await discoveredMonitoringLambda();
+    const aws = fakeAws();
+
+    const result = await cli(["monitor"], { aws, terminal, pressed: ["space", "enter"] });
+
+    expect(result).toEqual({
+      code: 1,
+      stdout: "",
+      stderr: "awol: awol monitor needs a terminal; choose Monitored services in the dashboard\n",
+      opened: [],
+    });
+    expect(aws.calls).toEqual([]);
+  });
+
+  it("refuses before any Discovery has run, saving nothing, and exits 1", async () => {
+    const result = await cli(["monitor"], { terminal: ON_A_TERMINAL, pressed: ["space", "enter"] });
+
+    expect(result).toEqual({ code: 1, stdout: "", stderr: "awol: run awol discover first\n", opened: [] });
+    expect(await monitoredServices()).toBeUndefined();
+  });
+
+  it.each([
+    ["before the checklist", 0],
+    ["on saving", 1],
+  ])("asks to log in again when credentials have expired %s, saving nothing, and exits 1", async (_, validCalls) => {
+    await discoveredMonitoringLambda();
+    const valid = fakeAws();
+    const expired = fakeAws({ [CALLER_IDENTITY]: { stderr: EXPIRED } });
+    let calls = 0;
+
+    const result = await cli(["monitor"], {
+      aws: (argv) => (calls++ < validCalls ? valid : expired)(argv),
+      terminal: ON_A_TERMINAL,
+      pressed: ["space", "enter"],
+    });
+
+    expect(screenOf(result.stdout)).toEqual([]);
+    expect(result).toMatchObject({ code: 1, stderr: `awol: ${EXPIRED.trim()}\n` });
+    expect(await monitoredServices()).toEqual(["Lambda"]);
+  });
+
+  it.each([
+    ["saved", ["space", "enter"], ["  ✔ Aurora", "  ✔ Lambda"]],
+    ["unchanged", ["enter"], ["  ✔ Lambda"]],
+  ] as const)("points at the dashboard when the server is running, the choice %s", async (_, pressed, ticks) => {
+    await discoveredMonitoringLambda();
+    await cli(["start"]);
+
+    const result = await cli(["monitor"], { terminal: ON_A_TERMINAL, pressed: [...pressed] });
+
+    expect(screenOf(result.stdout)).toEqual(["Monitoring", ...ticks, "", `See ${url}`]);
+    expect(result.code).toBe(0);
+  });
+
+  it("colors the row it is on and dims the resources, then the heading and ticks of what it monitors, unless told not to, as by NO_COLOR", async () => {
+    await discoveredMonitoringLambda();
+
+    const colored = await cli(["monitor"], { terminal: ON_A_TERMINAL, color: true, pressed: ["enter"] });
+    const plain = await cli(["monitor"], { terminal: ON_A_TERMINAL, color: false, pressed: ["enter"] });
+
+    expect(colored.stdout).toContain("\x1b[36m> [ ] Aurora                 \x1b[2m0 resources\x1b[22m\x1b[39m\n");
+    expect(colored.stdout).toContain("  [x] Lambda                 \x1b[2m1 resource\x1b[22m\n");
+    expect(colored.stdout).toContain("\x1b[1mMonitoring\x1b[22m\n  \x1b[32m✔\x1b[39m Lambda\n");
+    expect(plain.stdout).not.toMatch(/\x1b\[\d+m/);
+  });
+
+  it("saves while a Scan of the account runs, as the dashboard does", async () => {
+    await discoveredMonitoringLambda();
+    await withUnrelatedProcess(async (pid) => {
+      await writeRunning(pid);
+
+      const result = await cli(["monitor"], { terminal: ON_A_TERMINAL, pressed: ["space", "enter"] });
+
+      expect(result).toMatchObject({ code: 0, stderr: "" });
+    });
+    expect(await monitoredServices()).toEqual(["Aurora", "Lambda"]);
+  });
+
+  it.each([["Lambda"], ["--force"]])("takes no arguments, printing the usage for %s, and exits 2", async (argument) => {
+    const aws = fakeAws();
+
+    const result = await cli(["monitor", argument], { aws, terminal: ON_A_TERMINAL, pressed: ["enter"] });
+
+    expect(result).toEqual({ code: 2, stdout: "", stderr: `${USAGE}\n`, opened: [] });
+    expect(aws.calls).toEqual([]);
   });
 });

@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { on } from "node:events";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import path from "node:path";
+import { emitKeypressEvents } from "node:readline";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { openAwol } from "../awol/awol.ts";
 import { awsCli } from "../aws/runner.ts";
 import { defaultDataDir } from "../data/store.ts";
 import { endOfLifeFetcher } from "../endoflife/fetcher.ts";
-import { runCli } from "./run.ts";
+import { type Key, runCli } from "./run.ts";
 
 const HOST = "127.0.0.1";
 const PORT = 5151;
@@ -19,6 +21,10 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const nextBin = createRequire(import.meta.url).resolve("next/dist/bin/next");
 
 const dataDir = defaultDataDir(homedir());
+
+// The keys `awol monitor` answers to, by the name readline gives them. Set
+// before awol runs, as `keys` reads it while awol is awaited.
+const KEYS: Record<string, Key> = { up: "up", down: "down", space: "space", return: "enter", escape: "escape", q: "q" };
 
 process.exitCode = await runCli(process.argv.slice(2), {
   dataDir,
@@ -44,7 +50,25 @@ process.exitCode = await runCli(process.argv.slice(2), {
   // https://no-color.org: set to anything but empty, it turns color off.
   color: !process.env.NO_COLOR,
   ask,
+  keys,
 });
+
+// Reads the keys pressed on the terminal, with stdin in raw mode, so each
+// comes as it is pressed and Ctrl-C comes as a key, until no more are
+// wanted.
+async function* keys(): AsyncGenerator<Key> {
+  emitKeypressEvents(process.stdin);
+  process.stdin.setRawMode(true);
+  try {
+    for await (const [, key] of on(process.stdin, "keypress") as AsyncIterable<[string, { name?: string; ctrl?: boolean }]>) {
+      const pressed = key.ctrl ? (key.name === "c" ? "ctrl-c" : undefined) : KEYS[key.name ?? ""];
+      if (pressed !== undefined) yield pressed;
+    }
+  } finally {
+    process.stdin.setRawMode(false);
+    process.stdin.pause();
+  }
+}
 
 async function ask(question: string): Promise<string> {
   const terminal = createInterface({ input: process.stdin, output: process.stdout });

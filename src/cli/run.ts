@@ -13,6 +13,7 @@ import {
 } from "../awol/awol.ts";
 import type { Running } from "../awol/page-model.ts";
 import type { DiscoveryScope } from "../awol/discovery.ts";
+import { SUPPORTED_SERVICES, type SupportedService } from "../awol/component.ts";
 import { STATUSES, type Status } from "../awol/status.ts";
 import { openServerRecord, type ServerRecord } from "../data/server-record.ts";
 import { isAlive } from "../process.ts";
@@ -46,7 +47,13 @@ export type CliDeps = {
   color: boolean;
   // Asks `question` on the terminal, giving the answer.
   ask: (question: string) => Promise<string>;
+  // Reads the keys pressed on the terminal, one at a time as each is
+  // pressed, until no more are wanted.
+  keys: () => AsyncIterable<Key>;
 };
+
+// A key pressed on the terminal that `awol monitor` answers to.
+export type Key = "up" | "down" | "space" | "enter" | "escape" | "q" | "ctrl-c";
 
 type ServerRecordFile = ReturnType<typeof openServerRecord>;
 
@@ -61,7 +68,8 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
   if (command === "stop") return runStop(deps);
   if (command === "discover" && only("--failed", "--force")) return runDiscover(deps, options.includes("--failed") ? "failed" : "all", force);
   if (command === "scan" && only("--force")) return runScan(deps, force);
-  deps.stderr("usage: awol start | awol stop | awol discover [--failed] [--force] | awol scan [--force]\n");
+  if (command === "monitor" && only()) return runMonitor(deps);
+  deps.stderr("usage: awol start | awol stop | awol discover [--failed] [--force] | awol scan [--force] | awol monitor\n");
   return 2;
 }
 
@@ -275,16 +283,22 @@ async function reporting(
   if ("summary" in outcome) {
     const stale = outcome.failed === 0 ? undefined : `${counted(outcome.failed, "part")} Stale`;
     deps.stdout([...(look.fancy ? [""] : []), ...outcome.summary(look, stale), ""].join("\n"));
-    const live = await liveServer(openServerRecord(deps.dataDir));
-    if (live !== undefined) deps.stdout(look.fancy ? `\nSee ${look.cyan(live.url)}\n` : `see ${live.url}\n`);
+    await pointAtDashboard(deps, look);
     return outcome.failed > 0 ? 3 : 0;
   }
   if (outcome.kind === "login-needed") deps.stderr(`awol: ${outcome.reason}\n`);
-  if (outcome.kind === "monitored-services-needed") deps.stderr("awol: choose Monitored services in the dashboard first\n");
+  if (outcome.kind === "monitored-services-needed") deps.stderr("awol: choose Monitored services with awol monitor or in the dashboard first\n");
   if (outcome.kind === "busy") deps.stderr(`awol: ${alreadyRunning(outcome)}\n`);
   if (outcome.kind === "not-stopped") deps.stderr(`awol: ${nameOf(outcome.busy.running)} did not stop within ${deps.cancelTimeoutMs / 1000}s\n`);
   if (outcome.kind === "cancelled") deps.stderr("awol: cancelled on request\n");
   return 1;
+}
+
+// Prints where to see the dashboard, looking like `look`, when the server is
+// running.
+async function pointAtDashboard(deps: CliDeps, look: Look) {
+  const live = await liveServer(openServerRecord(deps.dataDir));
+  if (live !== undefined) deps.stdout(look.fancy ? `\nSee ${look.cyan(live.url)}\n` : `see ${live.url}\n`);
 }
 
 // `count` `thing`s, in words.
@@ -373,6 +387,102 @@ function partName(part: Part): string {
   if (part.kind === "presence") return `${part.awsService} ${part.region}`;
   if (part.kind === "endoflife.date") return `endoflife.date ${part.product}`;
   return `${part.service} ${part.region}`;
+}
+
+// Chooses the account's Monitored services on a checklist of every
+// supported service, in alphabetical order, each with how many resources the
+// last Discovery found, the current choice ticked, and keeps the ticked ones
+// on enter, printing each ticked under a Monitoring heading.
+async function runMonitor(deps: CliDeps): Promise<number> {
+  if (!deps.terminal.stdin || !deps.terminal.stdout) {
+    deps.stderr("awol: awol monitor needs a terminal; choose Monitored services in the dashboard\n");
+    return 1;
+  }
+  const model = await deps.awol.pageModel();
+  if (model.kind === "login-needed") {
+    deps.stderr(`awol: ${model.reason}\n`);
+    return 1;
+  }
+  if (model.discovery === undefined) {
+    deps.stderr("awol: run awol discover first\n");
+    return 1;
+  }
+  const { services } = model.discovery;
+  const rows = SUPPORTED_SERVICES.toSorted((a, b) => a.localeCompare(b)).map((service) => ({
+    service,
+    count: services.find((row) => row.service === service)?.count ?? 0,
+  }));
+  const monitored = model.monitoredServices ?? [];
+  const ticked = new Set<SupportedService>(monitored);
+  let cursor = 0;
+  // Whether to say to choose at least one service: enter was pressed with
+  // nothing ticked, and nothing has been ticked since.
+  let showChooseOne = false;
+  const look = lookOf(true, deps.color);
+  const nameWidth = Math.max(...rows.map(({ service }) => service.length));
+  const countWidth = Math.max(...rows.map(({ count }) => String(count).length));
+  const checklist = () => [
+    "Choose Monitored services:",
+    ...rows.map(({ service, count }, at) => {
+      const resources = `${String(count).padStart(countWidth)} resource${count === 1 ? "" : "s"}`;
+      const line = `${at === cursor ? ">" : " "} [${ticked.has(service) ? "x" : " "}] ${service.padEnd(nameWidth)}  ${look.dim(resources)}`;
+      return at === cursor ? look.cyan(line) : line;
+    }),
+    ...(showChooseOne ? ["Choose at least one service"] : []),
+    "↑/↓ move · space toggle · enter save · esc quit",
+  ];
+  const screen = redrawable(deps.stdout);
+  screen.draw(checklist());
+  for await (const key of deps.keys()) {
+    if (key === "escape" || key === "q") break;
+    if (key === "ctrl-c") {
+      screen.erase();
+      return 130;
+    }
+    if (key === "up") cursor = Math.max(cursor - 1, 0);
+    if (key === "down") cursor = Math.min(cursor + 1, rows.length - 1);
+    if (key === "space") {
+      const { service } = rows[cursor]!;
+      if (!ticked.delete(service)) ticked.add(service);
+      if (ticked.size > 0) showChooseOne = false;
+    }
+    if (key === "enter" && ticked.size === 0) showChooseOne = true;
+    if (key === "enter" && ticked.size > 0) {
+      screen.erase();
+      const changed = ticked.size !== monitored.length || monitored.some((service) => !ticked.has(service));
+      const saved = changed ? await deps.awol.setMonitoredServices([...ticked]) : undefined;
+      if (saved?.kind === "login-needed") {
+        deps.stderr(`awol: ${saved.reason}\n`);
+        return 1;
+      }
+      const chosen = rows.flatMap(({ service }) => (ticked.has(service) ? [`  ${look.green("✔")} ${service}\n`] : []));
+      deps.stdout(`${look.bold("Monitoring")}\n${chosen.join("")}`);
+      await pointAtDashboard(deps, look);
+      return 0;
+    }
+    screen.draw(checklist());
+  }
+  screen.erase();
+  deps.stderr("awol: nothing saved\n");
+  return 1;
+}
+
+// Lines drawn on a terminal with `print`, each drawing over the last.
+function redrawable(print: (text: string) => void) {
+  let drawn = 0;
+  // Goes back up over the lines drawn, clearing them.
+  const back = () => (drawn === 0 ? "" : `\x1b[${drawn}A\r\x1b[J`);
+  return {
+    draw(lines: string[]) {
+      print(`${back()}${lines.map((line) => `${line}\n`).join("")}`);
+      drawn = lines.length;
+    },
+
+    erase() {
+      print(back());
+      drawn = 0;
+    },
+  };
 }
 
 async function runStart(deps: CliDeps): Promise<number> {
