@@ -20,6 +20,14 @@ import {
   type TableState,
   tableStateOf,
 } from "./dashboard-view.ts";
+import {
+  type DiscoveryFilters,
+  type DiscoveryView,
+  discoveryFiltersOf,
+  discoverySearchParamsOf,
+  discoveryViewOf,
+  NO_DISCOVERY_FILTERS,
+} from "./discovery-view.ts";
 import { nextStepOf } from "./next-step.ts";
 import type { DiscoveryResult, LastScan, SignedIn } from "./page-model.ts";
 import { topBarOf } from "./top-bar.ts";
@@ -2440,7 +2448,7 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
     }));
   }
 
-  it("shows only the Components with the chosen Statuses, and counts only those", async () => {
+  it("shows only the Components with the chosen Statuses", async () => {
     const { lastScan, aws } = await scannedAccount();
 
     const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, filters: { ...NO_FILTERS, statuses: ["AWOL", "Untracked"] } });
@@ -2448,7 +2456,6 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
     expect(groupsOf(view)).toEqual([
       { identifiers: ["function-9:$LATEST", "db-6", "db-1", "function-1:$LATEST"] },
     ]);
-    expect(view.counts).toEqual({ AWOL: 3, "Falling behind": 0, Current: 0, Untracked: 1 });
     expectOnlyJsonReads(aws);
   });
 
@@ -2469,7 +2476,6 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
     });
 
     expect(groupsOf(byProductAndRegion)).toEqual([{ identifiers: ["function-9:$LATEST", "db-1", "function-6:$LATEST"] }]);
-    expect(byProductAndRegion.counts).toEqual({ AWOL: 2, "Falling behind": 0, Current: 1, Untracked: 0 });
     expect(groupsOf(byServiceAndRegion)).toEqual([{ identifiers: ["db-6"] }]);
     expect(groupsOf(byEverything)).toEqual([{ identifiers: ["function-6:$LATEST", "function-1:$LATEST"] }]);
     expectOnlyJsonReads(aws);
@@ -2498,7 +2504,6 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
         ],
       },
     ]);
-    expect(view.counts).toEqual({ AWOL: 3, "Falling behind": 2, Current: 3, Untracked: 1 });
     expectOnlyJsonReads(aws);
   });
 
@@ -2520,7 +2525,6 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
     const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, search: "FUNCTION" });
 
     expect(groupsOf(view)).toEqual([{ identifiers: ["function-9:$LATEST", "function-6:$LATEST", "function-1:$LATEST"] }]);
-    expect(view.counts).toEqual({ AWOL: 1, "Falling behind": 0, Current: 1, Untracked: 1 });
     expectOnlyJsonReads(aws);
   });
 
@@ -2564,7 +2568,7 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
     expectOnlyJsonReads(aws);
   });
 
-  it("shows only the Components that pass both the search and the filters, grouped, and counts only those", async () => {
+  it("shows only the Components that pass both the search and the filters, grouped", async () => {
     const { lastScan, aws } = await scannedAccount();
 
     const view = dashboardViewOf(lastScan, {
@@ -2579,7 +2583,6 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
       { product: "RDS PostgreSQL", releaseCycle: "16", identifiers: ["db-4"] },
       { product: "RDS PostgreSQL", releaseCycle: "17", identifiers: ["db-5"] },
     ]);
-    expect(view.counts).toEqual({ AWOL: 0, "Falling behind": 2, Current: 2, Untracked: 0 });
     expect(view.range).toEqual({ from: 1, to: 4, of: 4 });
     expectOnlyJsonReads(aws);
   });
@@ -2608,7 +2611,6 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
       { product: "RDS PostgreSQL", releaseCycle: "17", identifiers: ["db-5"] },
       { product: "AWS Lambda", releaseCycle: undefined, identifiers: ["function-1:$LATEST"] },
     ]);
-    expect(view.counts).toEqual({ AWOL: 3, "Falling behind": 2, Current: 3, Untracked: 1 });
     expectOnlyJsonReads(aws);
   });
 
@@ -2706,13 +2708,15 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
     expectOnlyJsonReads(aws);
   });
 
-  it("sorts on a column ascending, then descending, then in Urgency order again, and on another column ascending", () => {
-    const ascending = nextSort(undefined, "endOfLife");
+  it("sorts by Status at first, then on a column ascending, then descending, then ascending again, and on another column ascending", () => {
+    const ascending = nextSort(INITIAL_TABLE_STATE.sort, "endOfLife");
     const descending = nextSort(ascending, "endOfLife");
 
+    expect(INITIAL_TABLE_STATE.sort).toEqual({ column: "status", direction: "ascending" });
+    expect(nextSort(INITIAL_TABLE_STATE.sort, "status")).toEqual({ column: "status", direction: "descending" });
     expect(ascending).toEqual({ column: "endOfLife", direction: "ascending" });
     expect(descending).toEqual({ column: "endOfLife", direction: "descending" });
-    expect(nextSort(descending, "endOfLife")).toBeUndefined();
+    expect(nextSort(descending, "endOfLife")).toEqual(ascending);
     expect(nextSort(descending, "region")).toEqual({ column: "region", direction: "ascending" });
   });
 
@@ -2739,7 +2743,7 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
     return Array.from({ length: to - from + 1 }, (_, i) => `function-${from + i}:$LATEST`);
   }
 
-  it("shows one page of Components, and counts every Component that passes the filters", async () => {
+  it("shows one page of Components", async () => {
     // 39 Components: function-9:$LATEST, db-6, db-1, db-2, db-3,
     // function-6:$LATEST, function-11:$LATEST to function-40:$LATEST, db-4,
     // db-5 and function-1:$LATEST.
@@ -2754,7 +2758,6 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
     expect(first).toMatchObject({ page: 0, pages: 2, range: { from: 1, to: 25, of: 39 } });
     expect(groupsOf(second)).toEqual([{ identifiers: [...functionsFrom(30, 40), "db-4", "db-5", "function-1:$LATEST"] }]);
     expect(second).toMatchObject({ page: 1, pages: 2, range: { from: 26, to: 39, of: 39 } });
-    expect(second.counts).toEqual({ AWOL: 3, "Falling behind": 2, Current: 33, Untracked: 1 });
     expectOnlyJsonReads(aws);
   });
 
@@ -3982,5 +3985,142 @@ describe("the dashboard before its first Scan", () => {
     const model = signedIn({ discovery: discovery({ finishedAt: "2026-11-04T08:05:00Z" }), monitoredServices: ["RDS"] });
 
     expect(nextStepOf(model)).toBe("scan");
+  });
+});
+
+describe("the Discovery page's filters", () => {
+  // A Discovery of three regions that found, supported first:
+  //
+  //   RDS        5  eu-west-1 (3), us-east-1 (2, Stale)
+  //   Lambda     0
+  //   EKS        1  us-west-2 (1)
+  //   Amazon MQ  2  eu-west-1 (2), not in us-east-1 or us-west-2
+  const FOUND = discovery({
+    finishedAt: "2026-11-04T08:05:00Z",
+    regions: ["eu-west-1", "us-east-1", "us-west-2"],
+    services: [
+      {
+        service: "RDS",
+        supported: true,
+        count: 5,
+        regions: [
+          { region: "eu-west-1", count: 3 },
+          { region: "us-east-1", count: 2, stale: { lastReadAt: "2026-11-03T08:00:00Z" } },
+        ],
+        notInRegions: [],
+        versions: [{ product: "RDS PostgreSQL", version: "16.13", count: 5 }],
+      },
+      { service: "Lambda", supported: true, count: 0, regions: [], notInRegions: [], versions: [] },
+      { service: "EKS", supported: false, count: 1, regions: [{ region: "us-west-2", count: 1 }], notInRegions: [], versions: [] },
+      {
+        service: "Amazon MQ",
+        supported: false,
+        count: 2,
+        regions: [{ region: "eu-west-1", count: 2 }],
+        notInRegions: ["us-east-1", "us-west-2"],
+        versions: [],
+      },
+    ],
+  });
+
+  // The services of `view`, by name.
+  const servicesOf = (view: DiscoveryView) => view.services.map(({ service }) => service);
+
+  it("shows every service the Discovery counts, supported first, when nothing is chosen", () => {
+    const view = discoveryViewOf(FOUND, NO_DISCOVERY_FILTERS);
+
+    expect(view.services).toEqual(FOUND.services);
+    expect(view.chosenCounts).toEqual({ support: 0, monitoring: 0, regions: 0 });
+  });
+
+  it("shows only the Supported services, or only those not supported, as chosen, and both when both are", () => {
+    const supported = discoveryViewOf(FOUND, { ...NO_DISCOVERY_FILTERS, support: ["Supported"] });
+    const notSupported = discoveryViewOf(FOUND, { ...NO_DISCOVERY_FILTERS, support: ["Not supported"] });
+    const both = discoveryViewOf(FOUND, { ...NO_DISCOVERY_FILTERS, support: ["Not supported", "Supported"] });
+
+    expect(servicesOf(supported)).toEqual(["RDS", "Lambda"]);
+    expect(servicesOf(notSupported)).toEqual(["EKS", "Amazon MQ"]);
+    expect(servicesOf(both)).toEqual(["RDS", "Lambda", "EKS", "Amazon MQ"]);
+    expect(both.chosenCounts).toEqual({ support: 2, monitoring: 0, regions: 0 });
+  });
+
+  it("shows only the Monitored services, or only the services not monitored, Supported or not, as chosen", () => {
+    const monitored = discoveryViewOf(FOUND, { ...NO_DISCOVERY_FILTERS, monitoring: ["Monitored"] }, ["RDS"]);
+    const notMonitored = discoveryViewOf(FOUND, { ...NO_DISCOVERY_FILTERS, monitoring: ["Not monitored"] }, ["RDS"]);
+
+    expect(servicesOf(monitored)).toEqual(["RDS"]);
+    expect(servicesOf(notMonitored)).toEqual(["Lambda", "EKS", "Amazon MQ"]);
+    expect(monitored.chosenCounts).toEqual({ support: 0, monitoring: 1, regions: 0 });
+  });
+
+  it("takes every service as not monitored before any Monitored services are chosen", () => {
+    const monitored = discoveryViewOf(FOUND, { ...NO_DISCOVERY_FILTERS, monitoring: ["Monitored"] });
+    const notMonitored = discoveryViewOf(FOUND, { ...NO_DISCOVERY_FILTERS, monitoring: ["Not monitored"] });
+
+    expect(servicesOf(monitored)).toEqual([]);
+    expect(servicesOf(notMonitored)).toEqual(["RDS", "Lambda", "EKS", "Amazon MQ"]);
+  });
+
+  it("shows only the services with resources in a chosen region, each with only its resources there, Stale or not, and the chosen regions it is not in", () => {
+    const view = discoveryViewOf(FOUND, { ...NO_DISCOVERY_FILTERS, regions: ["us-east-1", "eu-west-1"] });
+
+    expect(view.services).toEqual([
+      {
+        service: "RDS",
+        supported: true,
+        count: 5,
+        regions: [
+          { region: "eu-west-1", count: 3 },
+          { region: "us-east-1", count: 2, stale: { lastReadAt: "2026-11-03T08:00:00Z" } },
+        ],
+        notInRegions: [],
+        versions: [{ product: "RDS PostgreSQL", version: "16.13", count: 5 }],
+      },
+      { service: "Amazon MQ", supported: false, count: 2, regions: [{ region: "eu-west-1", count: 2 }], notInRegions: ["us-east-1"], versions: [] },
+    ]);
+    expect(view.chosenCounts).toEqual({ support: 0, monitoring: 0, regions: 2 });
+  });
+
+  it("counts only a service's resources in the chosen regions, keeping the versions it runs across the account", () => {
+    const view = discoveryViewOf(FOUND, { ...NO_DISCOVERY_FILTERS, regions: ["us-east-1"] });
+
+    expect(view.services).toEqual([
+      {
+        service: "RDS",
+        supported: true,
+        count: 2,
+        regions: [{ region: "us-east-1", count: 2, stale: { lastReadAt: "2026-11-03T08:00:00Z" } }],
+        notInRegions: [],
+        versions: [{ product: "RDS PostgreSQL", version: "16.13", count: 5 }],
+      },
+    ]);
+  });
+
+  it("takes a chosen region the account does not enable as no choice", () => {
+    const onlyElsewhere = discoveryViewOf(FOUND, { ...NO_DISCOVERY_FILTERS, regions: ["ap-east-1"] });
+    const alsoElsewhere = discoveryViewOf(FOUND, { ...NO_DISCOVERY_FILTERS, regions: ["ap-east-1", "us-west-2"] });
+
+    expect(onlyElsewhere).toEqual(discoveryViewOf(FOUND, NO_DISCOVERY_FILTERS));
+    expect(servicesOf(alsoElsewhere)).toEqual(["EKS"]);
+    expect(alsoElsewhere.chosenCounts).toEqual({ support: 0, monitoring: 0, regions: 1 });
+  });
+
+  it("keeps the chosen filters in the URL, and reads them back from it", () => {
+    const filters: DiscoveryFilters = { support: ["Not supported"], monitoring: ["Not monitored"], regions: ["eu-west-1", "us-east-1"] };
+
+    const query = discoverySearchParamsOf(filters).toString();
+
+    expect(query).toBe("support=Not+supported&monitoring=Not+monitored&regions=eu-west-1&regions=us-east-1");
+    expect(discoveryFiltersOf(new URLSearchParams(query))).toEqual(filters);
+  });
+
+  it("keeps nothing in the URL when nothing is chosen, and reads an unknown support or monitoring value as no choice", () => {
+    expect(discoverySearchParamsOf(NO_DISCOVERY_FILTERS).toString()).toBe("");
+    expect(discoveryFiltersOf(new URLSearchParams())).toEqual(NO_DISCOVERY_FILTERS);
+    expect(discoveryFiltersOf(new URLSearchParams("support=Maybe&support=Supported&monitoring=Sometimes&monitoring=Monitored"))).toEqual({
+      support: ["Supported"],
+      monitoring: ["Monitored"],
+      regions: [],
+    });
   });
 });

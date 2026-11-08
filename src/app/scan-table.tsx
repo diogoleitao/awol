@@ -1,9 +1,8 @@
 "use client";
 
-import { Activity, ArrowDown, ArrowUp, Globe, Package, Server, X } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, Globe, Package, Server } from "lucide-react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { type ReactNode, useEffect, useState } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
@@ -25,9 +24,12 @@ import {
 import { componentPathOf } from "../awol/component-page.ts";
 import type { ComponentRow, LastScan } from "../awol/page-model.ts";
 import { STATUSES, type Status } from "../awol/status.ts";
-import { CollapsibleCard } from "./collapsible-card.tsx";
 import { DateWithSources, StatusCell } from "./component-cells.tsx";
+import { FilterCard, FiltersHeading, FilterValues } from "./filter-card.tsx";
+import { useColumnWidths } from "./resizable-columns.tsx";
 import { SidebarLayout, type SidebarSection } from "./sidebar-layout.tsx";
+import { SCROLLING_TABLE, STICKY_HEADER, TABLE_AREA } from "./table-area.ts";
+import { toggledIn, useUrlState } from "./url-state.ts";
 
 // One of the table's columns: its heading, the column it sorts on, and what
 // its cell shows for a Component, with `query`, the table's state as its URL
@@ -57,6 +59,8 @@ const TABLE_COLUMNS: Column[] = [
 
 const COLUMNS = TABLE_COLUMNS.length;
 
+const HEADINGS = TABLE_COLUMNS.map(({ heading }) => heading);
+
 // The dashboard's filters, as sections of its sidebar, in alphabetical
 // order.
 const FILTER_SECTIONS = {
@@ -76,17 +80,12 @@ const FILTER_SECTIONS = {
 // Component's page, reloading it or opening a link to it shows the table as
 // it was.
 export function ScanTable({ scan, children }: { scan: LastScan; children?: ReactNode }) {
-  const searchParams = useSearchParams();
-  const [state, setState] = useState<TableState>(() => tableStateOf(searchParams));
+  const [state, setState, query] = useUrlState(tableStateOf, searchParamsOf);
   const { filters, search, grouped, sort, page } = state;
-  const query = searchParamsOf(state).toString();
   const options = filterOptionsOf(scan);
   const view = dashboardViewOf(scan, state);
   const anyChosen = Object.values(filters).some((chosen) => chosen.length > 0);
-
-  useEffect(() => {
-    window.history.replaceState(null, "", withQuery(window.location.pathname, query));
-  }, [query]);
+  const columns = useColumnWidths("dashboard", HEADINGS);
 
   // A live update that leaves fewer pages moves the table to the last one,
   // so that a later one with more does not move it back.
@@ -102,12 +101,7 @@ export function ScanTable({ scan, children }: { scan: LastScan; children?: React
 
   // Chooses `value` in the filter on `column`, or unchooses it.
   function toggle<K extends keyof Filters>(column: K, value: Filters[K][number]) {
-    change(({ filters }) => {
-      const chosen = filters[column] as Filters[K][number][];
-      return {
-        filters: { ...filters, [column]: chosen.includes(value) ? chosen.filter((other) => other !== value) : [...chosen, value] },
-      };
-    });
+    change(({ filters }) => ({ filters: toggledIn(filters, column, value) }));
   }
 
   // Shows the page at `index`, keeping everything else.
@@ -120,137 +114,117 @@ export function ScanTable({ scan, children }: { scan: LastScan; children?: React
       sections={Object.values(FILTER_SECTIONS)}
       sidebar={
         <>
-          <div className="flex flex-col gap-1">
-            <h2 className="font-medium">Filters</h2>
-            <p className="text-xs text-muted-foreground">
-              Show only the Components that match every filter. A filter with nothing chosen lets every Component through.
-            </p>
-            {/* Always there, so that the cards under it never move. */}
-            <Button
-              variant="outline"
-              size="sm"
-              className="mt-2 self-start"
-              disabled={!anyChosen}
-              onClick={() => change(() => ({ filters: NO_FILTERS }))}
-            >
-              <X />
-              Clear filters
-            </Button>
-          </div>
-          <FilterCard
-            section={FILTER_SECTIONS.products}
-            values={options.products}
-            chosen={filters.products}
-            count={view.chosenCounts.products}
-            onToggle={(value) => toggle("products", value)}
+          <FiltersHeading
+            description="Show only the Components that match every filter. A filter with nothing chosen lets every Component through."
+            anyChosen={anyChosen}
+            onClear={() => change(() => ({ filters: NO_FILTERS }))}
           />
-          <FilterCard
-            section={FILTER_SECTIONS.regions}
-            values={options.regions}
-            chosen={filters.regions}
-            count={view.chosenCounts.regions}
-            onToggle={(value) => toggle("regions", value)}
-          />
-          <FilterCard
-            section={FILTER_SECTIONS.services}
-            values={options.services}
-            chosen={filters.services}
-            count={view.chosenCounts.services}
-            onToggle={(value) => toggle("services", value)}
-          />
-          <FilterCard
-            section={FILTER_SECTIONS.statuses}
-            values={options.statuses}
-            chosen={filters.statuses}
-            count={view.chosenCounts.statuses}
-            onToggle={(value) => toggle("statuses", value)}
-          />
+          <FilterCard section={FILTER_SECTIONS.products} count={view.chosenCounts.products}>
+            <FilterValues values={options.products} chosen={filters.products} onToggle={(value) => toggle("products", value)} />
+          </FilterCard>
+          <FilterCard section={FILTER_SECTIONS.regions} count={view.chosenCounts.regions}>
+            <FilterValues values={options.regions} chosen={filters.regions} onToggle={(value) => toggle("regions", value)} />
+          </FilterCard>
+          <FilterCard section={FILTER_SECTIONS.services} count={view.chosenCounts.services}>
+            <FilterValues values={options.services} chosen={filters.services} onToggle={(value) => toggle("services", value)} />
+          </FilterCard>
+          <FilterCard section={FILTER_SECTIONS.statuses} count={view.chosenCounts.statuses}>
+            <FilterValues values={options.statuses} chosen={filters.statuses} onToggle={(value) => toggle("statuses", value)} />
+          </FilterCard>
         </>
       }
     >
-      <div className="flex min-w-0 flex-col gap-6">
-        {children}
-        <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          {STATUSES.map((status) => (
-            <li key={status} className={cn("flex items-center gap-3 rounded-lg border-2 bg-zinc-950 px-6 py-4", STATUS_TILE_CLASSES[status])}>
-              <span className="text-4xl font-semibold tabular-nums">{view.counts[status]}</span>
-              <span className="text-base font-medium">{status}</span>
-            </li>
-          ))}
-        </ul>
-        <h2 className="font-medium">Components</h2>
-        <div className="flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-2">
-            <span className="w-16 text-sm text-muted-foreground">Search</span>
-            <input
-              type="search"
-              value={search}
-              onChange={(event) => change(() => ({ search: event.target.value }))}
-              className="h-8 w-80 rounded-md border bg-transparent px-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
-            />
-          </label>
-          <div className="ml-auto">
-            <ToggleButton pressed={grouped} onClick={() => change(() => ({ grouped: !grouped }))}>
-              Group by Product and Release Cycle
-            </ToggleButton>
-          </div>
+      {children}
+      <ul className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {STATUSES.map((status) => (
+          <li key={status} className={cn("flex items-center gap-3 rounded-lg border-2 bg-zinc-950 px-6 py-4", STATUS_TILE_CLASSES[status])}>
+            <span className="text-4xl font-semibold tabular-nums">{scan.counts[status]}</span>
+            <span className="text-base font-medium">{status}</span>
+          </li>
+        ))}
+      </ul>
+      <h2 className="font-medium">Components</h2>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">Search</span>
+          <input
+            type="search"
+            value={search}
+            onChange={(event) => change(() => ({ search: event.target.value }))}
+            className="h-8 w-80 rounded-md border bg-transparent px-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          />
+        </label>
+        <div className="ml-auto">
+          <ToggleButton pressed={grouped} onClick={() => change(() => ({ grouped: !grouped }))}>
+            Group by Product and Release Cycle
+          </ToggleButton>
         </div>
-        <div>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                {TABLE_COLUMNS.map(({ heading, sortsOn }) => (
-                  <SortableHead
-                    key={heading}
-                    heading={heading}
-                    direction={sort?.column === sortsOn ? sort.direction : undefined}
-                    onClick={() => change(({ sort }) => ({ sort: nextSort(sort, sortsOn) }))}
-                  />
-                ))}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              <SizingRow components={scan.components} query={query} />
-              {view.groups.every((group) => group.components.length === 0) && (
-                <TableRow>
-                  <TableCell colSpan={COLUMNS} className="text-muted-foreground">
-                    No Component passes the filters.
-                  </TableCell>
-                </TableRow>
-              )}
-              {view.groups.map((group) => (
-                <Group key={group.key} group={group} grouped={grouped} query={query} />
+      </div>
+      <div className={TABLE_AREA}>
+        <Table ref={columns.ref} className={columns.tableClassName} style={columns.tableStyle} containerClassName={SCROLLING_TABLE}>
+          <TableHeader className={STICKY_HEADER}>
+            <TableRow>
+              {TABLE_COLUMNS.map(({ heading, sortsOn }) => (
+                <SortableHead
+                  key={heading}
+                  heading={heading}
+                  direction={sort.column === sortsOn ? sort.direction : undefined}
+                  style={columns.head(heading)}
+                  resizer={columns.resizer(heading)}
+                  onClick={() => change(({ sort }) => ({ sort: nextSort(sort, sortsOn) }))}
+                />
               ))}
-            </TableBody>
-          </Table>
-          {/* At the bottom of the window, under the table only, while the
-              table runs past it. */}
-          <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background py-3 text-sm">
-            {view.pages > 1 && (
-              <>
-                <Button variant="outline" size="sm" disabled={view.page === 0} onClick={() => goTo(view.page - 1)}>
-                  Previous
-                </Button>
-                <Button variant="outline" size="sm" disabled={view.page === view.pages - 1} onClick={() => goTo(view.page + 1)}>
-                  Next
-                </Button>
-              </>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            <SizingRow components={scan.components} query={query} />
+            {view.groups.every((group) => group.components.length === 0) && (
+              <TableRow>
+                <TableCell colSpan={COLUMNS} className="text-muted-foreground">
+                  No Component passes the filters.
+                </TableCell>
+              </TableRow>
             )}
-            {view.range.of > PAGE_SIZES[0] && (
-              <>
-                <span className="tabular-nums">
-                  {view.range.from}-{view.range.to} of {view.range.of} Components
+            {view.groups.map((group) => (
+              <Group key={group.key} group={group} grouped={grouped} query={query} />
+            ))}
+          </TableBody>
+        </Table>
+        {/* Right under the table's last row, or, while the table runs past
+            what its area leaves it, under the table on wide screens and at
+            the bottom of the window on narrow ones. */}
+        <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background py-3 text-sm">
+          {view.pages > 1 && (
+            <>
+              <Button variant="outline" size="sm" disabled={view.page === 0} onClick={() => goTo(view.page - 1)}>
+                Previous
+              </Button>
+              <Button variant="outline" size="sm" disabled={view.page === view.pages - 1} onClick={() => goTo(view.page + 1)}>
+                Next
+              </Button>
+            </>
+          )}
+          {view.range.of > PAGE_SIZES[0] && (
+            <>
+              {/* As wide on every page as on the widest, holding the last
+                  Component's number on both sides, so that what follows it
+                  never moves. */}
+              <span className="grid tabular-nums">
+                <span className="col-start-1 row-start-1">
+                  {view.range.from}-{view.range.to} of {view.range.of}
                 </span>
-                <span className="text-muted-foreground">Per page</span>
-                {PAGE_SIZES.map((size) => (
-                  <ToggleButton key={size} pressed={page.size === size} onClick={() => change(() => ({ page: { ...page, size } }))}>
-                    {size}
-                  </ToggleButton>
-                ))}
-              </>
-            )}
-            {sort === undefined && <span className="text-muted-foreground">Sorted by Urgency order</span>}
-          </div>
+                <span aria-hidden className="invisible col-start-1 row-start-1">
+                  {view.range.of}-{view.range.of} of {view.range.of}
+                </span>
+              </span>
+              <span className="text-muted-foreground">Per page</span>
+              {PAGE_SIZES.map((size) => (
+                <ToggleButton key={size} pressed={page.size === size} onClick={() => change(() => ({ page: { ...page, size } }))}>
+                  {size}
+                </ToggleButton>
+              ))}
+            </>
+          )}
         </div>
       </div>
     </SidebarLayout>
@@ -258,79 +232,36 @@ export function ScanTable({ scan, children }: { scan: LastScan; children?: React
 }
 
 // A column heading that sorts the table on its column, with an arrow the way
-// it sorts while it does.
+// it sorts while it does, its `style` and its column's `resizer`.
 function SortableHead({
   heading,
   direction,
+  style,
+  resizer,
   onClick,
 }: {
   heading: string;
   direction: Sort["direction"] | undefined;
+  style?: CSSProperties;
+  resizer: ReactNode;
   onClick: () => void;
 }) {
   return (
-    <TableHead aria-sort={direction}>
+    <TableHead aria-sort={direction} className="relative" style={style}>
       <button type="button" className="inline-flex items-center gap-1 hover:underline" onClick={onClick}>
         {heading}
         {direction === "ascending" && <ArrowUp className="size-3.5" />}
         {direction === "descending" && <ArrowDown className="size-3.5" />}
       </button>
+      {resizer}
     </TableHead>
   );
 }
 
-// A filter's card, open at first: the values it offers, one per line and as
-// wide as the card, each chosen or not,
-// under its `section`'s name and icon and `count`, how many chosen values it
-// offers, when any.
-function FilterCard<T extends string>({
-  section,
-  values,
-  chosen,
-  count,
-  onToggle,
-}: {
-  section: SidebarSection;
-  values: T[];
-  chosen: T[];
-  count: number;
-  onToggle: (value: T) => void;
-}) {
-  return (
-    <CollapsibleCard
-      icon={section.icon}
-      title={
-        <>
-          {section.name} {count > 0 && <span className="tabular-nums font-normal text-muted-foreground">({count})</span>}
-        </>
-      }
-      defaultOpen
-    >
-      <div className="flex flex-col gap-2">
-        {values.map((value) => (
-          <ToggleButton key={value} pressed={chosen.includes(value)} className="justify-start" onClick={() => onToggle(value)}>
-            {value}
-          </ToggleButton>
-        ))}
-      </div>
-    </CollapsibleCard>
-  );
-}
-
 // A button that stays pressed while its value is chosen.
-function ToggleButton({
-  pressed,
-  className,
-  onClick,
-  children,
-}: {
-  pressed: boolean;
-  className?: string;
-  onClick: () => void;
-  children: ReactNode;
-}) {
+function ToggleButton({ pressed, onClick, children }: { pressed: boolean; onClick: () => void; children: ReactNode }) {
   return (
-    <Button variant={pressed ? "default" : "outline"} size="sm" aria-pressed={pressed} className={className} onClick={onClick}>
+    <Button variant={pressed ? "default" : "outline"} size="sm" aria-pressed={pressed} onClick={onClick}>
       {children}
     </Button>
   );

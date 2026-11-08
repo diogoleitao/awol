@@ -28,20 +28,15 @@ function NoScanYet({ next }: { next: NextStep }) {
       {next === "discover" && (
         <>
           {" "}
-          Run a <DiscoveryLink>Discovery</DiscoveryLink> first, then choose Monitored services.
+          Run a <DiscoveryLink>Discovery</DiscoveryLink> first, then choose Monitored services under Monitoring in the top bar.
         </>
       )}
-      {next === "choose-monitored-services" && (
-        <>
-          {" "}
-          Choose <DiscoveryLink>Monitored services</DiscoveryLink> for a Scan to read.
-        </>
-      )}
+      {next === "choose-monitored-services" && " Choose Monitored services under Monitoring in the top bar for a Scan to read."}
     </p>
   );
 }
 
-// A link to the Discovery page, where Monitored services are chosen.
+// A link to the Discovery page.
 function DiscoveryLink({ children }: { children: string }) {
   return (
     <Link href="/discovery" className="font-medium text-foreground underline underline-offset-4">
@@ -75,9 +70,7 @@ function UnmonitoredServices({ services }: { services: UnmonitoredService[] }) {
             </li>
           ))}
         </ul>
-        <p>
-          Choose them under <DiscoveryLink>Monitored services</DiscoveryLink> for a Scan to read them.
-        </p>
+        <p>Choose them under Monitoring in the top bar for a Scan to read them.</p>
       </AlertDescription>
     </Alert>
   );

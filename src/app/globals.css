@@ -30,6 +30,9 @@
 
 :root {
   color-scheme: light dark;
+  /* The top bar's height on wide screens, which the pages with a sidebar
+     fill the rest of the window under. */
+  --top-bar-height: 3.75rem;
   --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);

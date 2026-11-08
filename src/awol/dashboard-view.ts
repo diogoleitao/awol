@@ -1,6 +1,6 @@
 import { type Service, SUPPORTED_BY } from "./component.ts";
 import type { ComponentRow, LastScan } from "./page-model.ts";
-import { countsOf, STATUSES, type Status } from "./status.ts";
+import { STATUSES, type Status } from "./status.ts";
 
 // The values chosen in each column the dashboard's table filters on, or the
 // values each column offers. A Component shows when its value is among the
@@ -34,15 +34,14 @@ export const SORT_COLUMNS = ["identifier", "product", "region", "version", "stat
 
 export type SortColumn = (typeof SORT_COLUMNS)[number];
 
-// A column to sort the dashboard's table on, and which way. No sort is
-// Urgency order.
+// A column to sort the dashboard's table on, and which way.
 export type Sort = { column: SortColumn; direction: "ascending" | "descending" };
 
-// The sort after choosing `column`: ascending on a column not sorted on, then
-// descending, then back to Urgency order.
-export function nextSort(sort: Sort | undefined, column: SortColumn): Sort | undefined {
-  if (sort?.column !== column) return { column, direction: "ascending" };
-  return sort.direction === "ascending" ? { column, direction: "descending" } : undefined;
+// The sort after choosing `column`: ascending on a column not sorted on,
+// then descending and ascending in turn.
+export function nextSort(sort: Sort, column: SortColumn): Sort {
+  if (sort.column !== column) return { column, direction: "ascending" };
+  return { column, direction: sort.direction === "ascending" ? "descending" : "ascending" };
 }
 
 // How many Components a page of the dashboard's table can show.
@@ -55,9 +54,16 @@ export type Page = { index: number; size: PageSize };
 
 // What the dashboard's table is set to show: its filters, its search,
 // whether it groups, its sort, and its page.
-export type TableState = { filters: Filters; search: string; grouped: boolean; sort?: Sort; page: Page };
+export type TableState = { filters: Filters; search: string; grouped: boolean; sort: Sort; page: Page };
 
-export const INITIAL_TABLE_STATE: TableState = { filters: NO_FILTERS, search: "", grouped: false, page: { index: 0, size: 25 } };
+// The table at first: by Status, most urgent first.
+export const INITIAL_TABLE_STATE: TableState = {
+  filters: NO_FILTERS,
+  search: "",
+  grouped: false,
+  sort: { column: "status", direction: "ascending" },
+  page: { index: 0, size: 25 },
+};
 
 // `state` as the dashboard's URL keeps it: each chosen filter value, the
 // search, grouping, the sort and its direction, the page, counted from 1,
@@ -67,7 +73,7 @@ export function searchParamsOf({ filters, search, grouped, sort, page }: TableSt
   for (const [column, chosen] of Object.entries(filters)) for (const value of chosen) params.append(column, value);
   if (search !== "") params.set("search", search);
   if (grouped) params.set("grouped", "true");
-  if (sort !== undefined) {
+  if (sort.column !== INITIAL_TABLE_STATE.sort.column || sort.direction !== INITIAL_TABLE_STATE.sort.direction) {
     params.set("sort", sort.column);
     params.set("direction", sort.direction);
   }
@@ -92,7 +98,7 @@ export function tableStateOf(params: URLSearchParams): TableState {
     },
     search: params.get("search") ?? "",
     grouped: params.get("grouped") === "true",
-    ...(column !== undefined && direction !== undefined && { sort: { column, direction } }),
+    sort: column !== undefined && direction !== undefined ? { column, direction } : INITIAL_TABLE_STATE.sort,
     page: {
       index: Number.isInteger(page) && page > 1 ? page - 1 : 0,
       size: oneOf(PAGE_SIZES, Number(params.get("size"))) ?? INITIAL_TABLE_STATE.page.size,
@@ -110,7 +116,7 @@ const SERVICES = Object.keys(SUPPORTED_BY) as Service[];
 const DIRECTIONS = ["ascending", "descending"] as const;
 
 // Whether `value` is one of `values`.
-function isOneOf<T>(values: readonly T[], value: unknown): value is T {
+export function isOneOf<T>(values: readonly T[], value: unknown): value is T {
   return values.includes(value as T);
 }
 
@@ -120,13 +126,11 @@ function oneOf<T>(values: readonly T[], value: unknown): T | undefined {
 }
 
 // The last Scan as the dashboard's table shows it: how many values are
-// chosen in each filter, how many of the Components that pass the filters
-// and search have each Status, its rows on the page shown, that page's index
-// out of how many pages, and which of the Components that pass the filters
-// and search it shows, counted from 1.
+// chosen in each filter, its rows on the page shown, that page's index out
+// of how many pages, and which of the Components that pass the filters and
+// search it shows, counted from 1.
 export type DashboardView = {
   chosenCounts: Record<keyof Filters, number>;
-  counts: Record<Status, number>;
   groups: ComponentGroup[];
   page: number;
   pages: number;
@@ -137,8 +141,8 @@ export type DashboardView = {
 // `state`'s page. A chosen value `scan` does not offer, as one kept from
 // before a Scan that no longer finds it, is no choice.
 //
-// They come in Urgency order, the last Scan's, or sorted on `state`'s
-// column, with ties in Urgency order. Grouped, they are grouped by Product
+// They come sorted on `state`'s column, with ties in the last Scan's
+// Urgency order. Grouped, they are grouped by Product
 // and Release Cycle, each group where its first Component is, keeping that
 // order inside it, and a group can go on from one page to the next. A page
 // past the last shows the last.
@@ -154,7 +158,7 @@ export function dashboardViewOf(scan: LastScan, { filters, search, grouped, sort
       passes(filters.statuses, offered.statuses, component.status) &&
       matches(search, component),
   );
-  if (sort !== undefined) components.sort(compareOn(sort));
+  components.sort(compareOn(sort));
   const pages = Math.max(1, Math.ceil(components.length / page.size));
   const index = Math.min(page.index, pages - 1);
   const from = index * page.size;
@@ -167,7 +171,6 @@ export function dashboardViewOf(scan: LastScan, { filters, search, grouped, sort
       regions: choiceOf(filters.regions, offered.regions).length,
       statuses: choiceOf(filters.statuses, offered.statuses).length,
     },
-    counts: countsOf(components),
     groups: onPage(groups, from, to),
     page: index,
     pages,

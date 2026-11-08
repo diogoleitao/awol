@@ -1,76 +1,149 @@
-import { History, Info } from "lucide-react";
+"use client";
+
+import { BadgeCheck, Eye, History } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { DiscoveredServiceRow, DiscoveryPart, DiscoveryResult, FailedDiscoveryPart } from "../awol/page-model.ts";
+import { cn } from "@/lib/utils";
+import {
+  type DiscoveryFilters,
+  discoveryFiltersOf,
+  discoverySearchParamsOf,
+  discoveryViewOf,
+  MONITORING,
+  NO_DISCOVERY_FILTERS,
+  SUPPORT,
+} from "../awol/discovery-view.ts";
+import type { DiscoveredServiceRow, DiscoveryPart, DiscoveryResult, FailedDiscoveryPart, SupportedService } from "../awol/page-model.ts";
 import { RerunFailedPartsButton } from "./discover-buttons.tsx";
+import { FilterCard, FiltersHeading, FilterValues } from "./filter-card.tsx";
 import { formatTime } from "./format.ts";
+import { REGIONS_SECTION, RegionsCard } from "./regions-card.tsx";
+import { useColumnWidths } from "./resizable-columns.tsx";
+import { SidebarLayout, type SidebarSection } from "./sidebar-layout.tsx";
+import { SCROLLING_TABLE, STICKY_HEADER, TABLE_AREA } from "./table-area.ts";
+import { toggledIn, useUrlState } from "./url-state.ts";
+
+const SUPPORT_SECTION: SidebarSection = { name: "Support", icon: <BadgeCheck /> };
+
+const MONITORING_SECTION: SidebarSection = { name: "Monitoring", icon: <Eye /> };
 
 // The account's last Discovery: every service it counts with the regions and
-// versions it found, the services awol supports apart from the rest, and the
-// parts it could not read, with a button to read only those again. `busy` is whether any Scan or Discovery of the account is
+// versions it found, Supported services first, filtered from a sidebar on
+// whether they are supported, whether they are among the account's
+// Monitored services, `monitored`, and on the regions enabled in the
+// account, and the parts it could not read, with a button to read only
+// those again. `busy` is whether any Scan or Discovery of the account is
 // running, which the button waits for. The top bar tells when it ran and
 // runs it again.
-export function DiscoverySection({ discovery, busy }: { discovery: DiscoveryResult; busy: boolean }) {
-  const supported = discovery.services.filter(({ supported }) => supported);
-  const unsupported = discovery.services.filter(({ supported }) => !supported);
+//
+// The page's URL keeps the chosen filters, replaced on each change rather
+// than added to the history, so that going back to the page, reloading it
+// or opening a link to it shows them as they were.
+export function DiscoverySection({
+  discovery,
+  monitored,
+  busy,
+}: {
+  discovery: DiscoveryResult;
+  monitored?: SupportedService[];
+  busy: boolean;
+}) {
+  const [filters, setFilters] = useUrlState(discoveryFiltersOf, discoverySearchParamsOf);
+  const view = discoveryViewOf(discovery, filters, monitored);
+
+  // Chooses `value` in the filter `filter`, or unchooses it.
+  function toggle<K extends keyof DiscoveryFilters>(filter: K, value: DiscoveryFilters[K][number]) {
+    setFilters((current) => toggledIn(current, filter, value));
+  }
+
   return (
-    <section className="flex flex-col gap-6">
+    <SidebarLayout
+      sections={[SUPPORT_SECTION, MONITORING_SECTION, REGIONS_SECTION]}
+      sidebar={
+        <>
+          <FiltersHeading
+            description="Show only the services that match every filter. A filter with nothing chosen lets every service through."
+            anyChosen={Object.values(filters).some((chosen) => chosen.length > 0)}
+            onClear={() => setFilters(NO_DISCOVERY_FILTERS)}
+          />
+          <FilterCard
+            section={SUPPORT_SECTION}
+            count={view.chosenCounts.support}
+            description={
+              <>
+                <span className="block">Supported: awol can monitor it.</span>
+                <span className="block">Not supported: counted, but awol cannot monitor it yet.</span>
+              </>
+            }
+          >
+            <FilterValues values={SUPPORT} chosen={filters.support} onToggle={(value) => toggle("support", value)} />
+          </FilterCard>
+          <FilterCard section={MONITORING_SECTION} count={view.chosenCounts.monitoring}>
+            <FilterValues values={MONITORING} chosen={filters.monitoring} onToggle={(value) => toggle("monitoring", value)} />
+          </FilterCard>
+          <RegionsCard
+            regions={discovery.regions}
+            chosen={filters.regions}
+            count={view.chosenCounts.regions}
+            onToggle={(region) => toggle("regions", region)}
+          />
+        </>
+      }
+    >
       {discovery.failedParts.length > 0 && <FailedParts parts={discovery.failedParts} busy={busy} />}
-      <Tabs defaultValue="supported">
-        <div className="flex items-center gap-2">
-          <TabsList>
-            <TabsTrigger value="supported">
-              Supported <span className="tabular-nums text-muted-foreground">({supported.length})</span>
-            </TabsTrigger>
-            <TabsTrigger value="unsupported">
-              Not supported <span className="tabular-nums text-muted-foreground">({unsupported.length})</span>
-            </TabsTrigger>
-          </TabsList>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button type="button" aria-label="What Supported and Not supported mean" className="rounded-full text-muted-foreground outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50">
-                <Info className="size-4" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right" className="max-w-xs">
-              <p>Supported: services awol can monitor. Choose them as Monitored services for a Scan to read their Components and lifecycle.</p>
-              <p className="mt-1">Not supported: services Discovery counts so you know they are there, which awol cannot monitor yet.</p>
-            </TooltipContent>
-          </Tooltip>
-        </div>
-        <TabsContent value="supported">
-          <ServicesTable rows={supported} />
-        </TabsContent>
-        <TabsContent value="unsupported">
-          <ServicesTable rows={unsupported} />
-        </TabsContent>
-      </Tabs>
-    </section>
+      <ServicesTable rows={view.services} />
+    </SidebarLayout>
   );
 }
 
-// Services the Discovery counts, one row each, in columns as wide in either
-// tab whatever their rows hold.
+// The services table's columns: each heading, and its share of the table's
+// width until a column is resized.
+const SERVICE_COLUMNS = [
+  { heading: "Service", className: "w-1/5" },
+  { heading: "Resources", className: "w-1/10" },
+  { heading: "Regions", className: "w-3/10" },
+  { heading: "Versions", className: "w-2/5" },
+] as const;
+
+const SERVICE_HEADINGS = SERVICE_COLUMNS.map(({ heading }) => heading);
+
+// Services the Discovery counts, one row each, in columns as wide whatever
+// their rows hold, until one is resized.
 function ServicesTable({ rows }: { rows: DiscoveredServiceRow[] }) {
+  const columns = useColumnWidths("discovery", SERVICE_HEADINGS);
   return (
-    <Table className="table-fixed">
-      <TableHeader>
-        <TableRow>
-          <TableHead className="w-1/5">Service</TableHead>
-          <TableHead className="w-1/10">Resources</TableHead>
-          <TableHead className="w-3/10">Regions</TableHead>
-          <TableHead className="w-2/5">Versions</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {rows.map((row) => (
-          <ServiceRow key={row.service} row={row} />
-        ))}
-      </TableBody>
-    </Table>
+    <div className={TABLE_AREA}>
+      <Table
+        ref={columns.ref}
+        className={cn("table-fixed", columns.tableClassName)}
+        style={columns.tableStyle}
+        containerClassName={SCROLLING_TABLE}
+      >
+        <TableHeader className={STICKY_HEADER}>
+          <TableRow>
+            {SERVICE_COLUMNS.map(({ heading, className }) => (
+              <TableHead key={heading} className={cn("relative", className)} style={columns.head(heading)}>
+                {heading}
+                {columns.resizer(heading)}
+              </TableHead>
+            ))}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.length === 0 && (
+            <TableRow>
+              <TableCell colSpan={SERVICE_COLUMNS.length} className="text-muted-foreground">
+                No service passes the filters.
+              </TableCell>
+            </TableRow>
+          )}
+          {rows.map((row) => (
+            <ServiceRow key={row.service} row={row} />
+          ))}
+        </TableBody>
+      </Table>
+    </div>
   );
 }
 

@@ -28,6 +28,10 @@ _Avoid_: Major version, major, engine version
 The setup step that finds which services an AWS account uses, region by region, including services awol cannot monitor yet.
 _Avoid_: Onboarding, crawl, inventory
 
+**Supported service**:
+A service awol can monitor. Discovery also counts services that are not supported, so you know they are there.
+_Avoid_: Monitorable service
+
 **Monitored service**:
 A service the user chose, from what Discovery found, for Scans to read.
 _Avoid_: Enabled service, tracked service

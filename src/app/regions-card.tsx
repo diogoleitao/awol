@@ -1,33 +1,45 @@
+"use client";
+
 import { ChevronRight, Globe } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { CollapsibleCard } from "./collapsible-card.tsx";
+import { FilterCard, FilterValue } from "./filter-card.tsx";
+import type { SidebarSection } from "./sidebar-layout.tsx";
 
-// The regions enabled in the account, which the last Discovery read, in a
-// card that opens to show them nested under the first part of their names,
-// each group closed until opened, with how many regions it has.
-export function RegionsCard({ regions }: { regions: string[] }) {
+export const REGIONS_SECTION: SidebarSection = { name: "Regions", icon: <Globe /> };
+
+// The regions enabled in the account, which the last Discovery read, as a
+// filter's card: each region a value, `chosen` or not, nested under the
+// first part of its name with how many regions share it, each group closed
+// until opened, and `count`, how many chosen regions the account enables.
+export function RegionsCard({
+  regions,
+  chosen,
+  count,
+  onToggle,
+}: {
+  regions: string[];
+  chosen: string[];
+  count: number;
+  onToggle: (region: string) => void;
+}) {
   return (
-    <CollapsibleCard
-      icon={<Globe />}
-      title={
-        <>
-          Regions <span className="tabular-nums font-normal text-muted-foreground">({regions.length})</span>
-        </>
-      }
-      description="Enabled in this account. Only these can hold resources."
-    >
-      <ul className="flex flex-col gap-1 font-mono text-sm">
+    <FilterCard section={REGIONS_SECTION} count={count} description="Enabled in this account. Only these can hold resources.">
+      <ul className="flex flex-col gap-1 text-sm">
         {regionGroupsOf(regions).map(([prefix, group]) => (
           <li key={prefix}>
             <Collapsible className="group/region">
-              <CollapsibleTrigger className="flex items-center gap-1 rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50">
+              <CollapsibleTrigger className="flex items-center gap-1 rounded-sm font-mono text-muted-foreground outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50">
                 <ChevronRight className="size-3.5 transition-transform group-data-[state=open]/region:rotate-90" />
                 {prefix} <span className="tabular-nums">({group.length})</span>
               </CollapsibleTrigger>
               <CollapsibleContent>
-                <ul className="mt-1 mb-1 ml-1.5 flex flex-col gap-0.5 border-l pl-3">
+                <ul className="mt-1 mb-2 ml-1.5 flex flex-col gap-2 border-l pl-3 font-mono">
                   {group.map((region) => (
-                    <li key={region}>{region}</li>
+                    <li key={region} className="flex flex-col">
+                      <FilterValue chosen={chosen.includes(region)} onClick={() => onToggle(region)}>
+                        {region}
+                      </FilterValue>
+                    </li>
                   ))}
                 </ul>
               </CollapsibleContent>
@@ -35,7 +47,7 @@ export function RegionsCard({ regions }: { regions: string[] }) {
           </li>
         ))}
       </ul>
-    </CollapsibleCard>
+    </FilterCard>
   );
 }
 
