@@ -39,12 +39,15 @@ export function startedWhere({ startedBy }: Running): string {
 // Extended Support setting, where AWS reports one. `drift` is how far its
 // version is behind each Drift figure; it never decides Status. A Stale row
 // comes from a part of the Scan that could not be read, and has the result of
-// its last successful read, at `stale.lastReadAt`.
+// its last successful read, at `stale.lastReadAt`. `environment` and
+// `project` are its Environment and Project, where it has them.
 export type ComponentRow = {
   service: Service;
   product: string;
   region: string;
   identifier: string;
+  environment?: string;
+  project?: string;
   version?: string;
   extendedSupport?: ExtendedSupport;
   releaseCycle?: string;
@@ -61,14 +64,20 @@ export type ComponentRow = {
 
 // The last Scan: when it ran, how many Components have each Status, its
 // Components, most urgent first, the parts of it that could not be read, and
-// the supported services it found resources of that are not monitored.
+// the supported services it found resources of that are not monitored. An
+// account whose configuration file is not one has `configError`, the file's
+// path and why, and no Component with an Environment or Project.
 export type LastScan = {
   ranAt: string;
   counts: Record<Status, number>;
   components: ComponentRow[];
   failedParts: FailedPart[];
   unmonitoredServices: UnmonitoredService[];
+  configError?: ConfigError;
 };
+
+// An account's configuration file that is not one: its path, and why.
+export type ConfigError = { path: string; error: string };
 
 // What the dashboard shows: the AWS account of the active profile, its last
 // Discovery, its Monitored services, once chosen, its last Scan, each if one

@@ -5,6 +5,7 @@ import {
   type ComponentReading,
   type ExtendedSupport,
   type Product,
+  resourceNameOf,
   type Service,
   SUPPORTED_BY,
   SUPPORTED_SERVICES,
@@ -12,6 +13,7 @@ import {
   type SupportedCounts,
   type SupportedService,
   supportedServiceOf,
+  type Tags,
 } from "./component.ts";
 import { type Drift, driftFrom, driftFromCycle, newestCycleOf, withHighestLatestPatch } from "./drift.ts";
 import { ELASTICACHE_PRODUCTS, readElastiCacheComponents } from "./elasticache.ts";
@@ -50,7 +52,8 @@ export type Stale = { lastReadAt: string };
 // and its Drift. A Scan from before awol read AWS's dates and settings has
 // none, and one from before it read Drift has no Drift. A Stale Component
 // comes from parts of the Scan that could not be read, and is Stale since the
-// older of their last successful reads.
+// older of their last successful reads. `tags` are its tags, where the Scan
+// read tags.
 export type ScannedComponent = {
   service: Service;
   product: string;
@@ -62,6 +65,7 @@ export type ScannedComponent = {
   releaseCycle?: ReleaseCycle;
   drift?: ComponentDrift;
   stale?: Stale;
+  tags?: Tags;
 };
 
 // One Component as AWS reported it, its Product given by its endoflife.date
@@ -79,17 +83,23 @@ type ProductPart = { endOfLifeProduct: string } & PartRead<ReleaseCycle[]>;
 // them monitored, there are in one region.
 type CountPart = { service: Service; region: string } & PartRead<SupportedCounts>;
 
+// The tags of the resources of the types Components are in one region, by
+// each resource's ARN.
+type TagPart = { region: string } & PartRead<Record<string, Tags>>;
+
 // A Scan, kept by part: the regions enabled for the account, the Components
-// of each service in each of them, the Release Cycles of their Products, and
-// how many resources the services not monitored have in each region. A Scan
-// from before awol kept it by part has its Components only, and one from
-// before awol had Monitored services counts nothing.
+// of each service in each of them, the Release Cycles of their Products, how
+// many resources the services not monitored have in each region, and, for an
+// account that reads its Environments and Projects from tags, the tags in
+// each region. A Scan from before awol kept it by part has its Components
+// only, and one from before awol had Monitored services counts nothing.
 export type Scan = {
   ranAt: string;
   regions?: PartRead<string[]>;
   services?: ServicePart[];
   products?: ProductPart[];
   unmonitored?: CountPart[];
+  tags?: TagPart[];
   components?: ScannedComponent[];
 };
 
@@ -102,6 +112,7 @@ export type ScanPart =
   | { kind: "regions" }
   | { kind: "service"; service: Service; region: string }
   | { kind: "unmonitored"; service: Service; region: string }
+  | { kind: "tags"; region: string }
   | { kind: "endoflife.date"; product: string };
 
 // A part of the last Scan that could not be read, with its error: Stale with
@@ -111,15 +122,16 @@ export type FailedPart = { part: ScanPart; error: string } & Partial<Stale>;
 // Reads every Component of the `monitored` services in the regions enabled
 // for the account, and the Release Cycles of their Products, and counts the
 // resources of the supported services not monitored with `countSupported`,
-// reading nothing more of them. The account's regions, or a service in a
-// region, that cannot be read keep their result from `previous`, the
-// account's last Scan; a product endoflife.date fails for keeps its last
+// reading nothing more of them; with `readTags`, it reads the tags in each
+// region too. The account's regions, or a service's Components, counts or
+// tags in a region, that cannot be read keep their result from `previous`,
+// the account's last Scan; a product endoflife.date fails for keeps its last
 // answer. Its progress is told to `onProgress`: a Monitored service's step is
 // done once its Components are read in every region, and endoflife.date's
 // once every Product's Release Cycles are, each told even with nothing to
-// read; counting the resources of a service with nothing monitored is part
-// of no step. Before each part, `stopIfCancelled` throws if the Scan has been
-// asked to stop.
+// read; counting the resources of a service with nothing monitored, and
+// reading tags, are part of no step. Before each part, `stopIfCancelled`
+// throws if the Scan has been asked to stop.
 export async function runScan(
   aws: AwsRunner,
   releaseCycles: (endOfLifeProduct: string, now: Date) => Promise<PartRead<ReleaseCycle[]>>,
@@ -127,6 +139,7 @@ export async function runScan(
   now: Date,
   previous: Scan | undefined,
   monitored: SupportedService[],
+  readTags: boolean,
   onProgress?: (progress: Progress) => void,
   stopIfCancelled: () => Promise<void> = async () => {},
 ): Promise<Scan> {
@@ -149,10 +162,12 @@ export async function runScan(
     progress.found(perRegion * enabled.length, step);
     if (step !== undefined) progress.close(step, { evenEmpty: true });
   }
+  if (readTags) progress.found(enabled.length);
 
   const byRegion = await mapConcurrently(enabled, REGION_CONCURRENCY, async (region) => {
     const services: ServicePart[] = [];
     const unmonitored: CountPart[] = [];
+    let tags: TagPart | undefined;
     const same = (part: { service: Service; region: string }, service: Service) => part.service === service && part.region === region;
     // One service at a time, so a region makes one call at once.
     for (const [service, read] of SERVICES) {
@@ -181,7 +196,13 @@ export async function runScan(
         progress.done(stepOf(service), failureOf({ kind: "service", service, region }, components));
       }
     }
-    return { services, unmonitored };
+    if (readTags) {
+      await stopIfCancelled();
+      const read = await readPart(() => tagsIn(aws, region), readAt, previous?.tags?.find((part) => part.region === region));
+      tags = { region, ...read };
+      progress.done(undefined, failureOf({ kind: "tags", region }, read));
+    }
+    return { services, unmonitored, tags };
   });
   const services = byRegion.flatMap((region) => region.services);
 
@@ -198,7 +219,61 @@ export async function runScan(
     }),
   );
 
-  return { ranAt: readAt, regions, services, products, unmonitored: byRegion.flatMap((region) => region.unmonitored) };
+  return {
+    ranAt: readAt,
+    regions,
+    services,
+    products,
+    unmonitored: byRegion.flatMap((region) => region.unmonitored),
+    ...(readTags ? { tags: byRegion.flatMap((region) => (region.tags === undefined ? [] : [region.tags])) } : {}),
+  };
+}
+
+// The resource types Components are, as the Resource Groups Tagging API
+// names them, each with the service a Scan reads its Components from: RDS
+// clusters and instances, ElastiCache replication groups, Serverless caches
+// and cache clusters, OpenSearch domains, and Lambda functions. Where two
+// resources of one service share a name, as a DB cluster and a member
+// instance may, the Component is the one whose type comes first.
+const TAGGED_TYPES: [string, Service][] = [
+  ["rds:cluster", "RDS"],
+  ["rds:db", "RDS"],
+  ["elasticache:replicationgroup", "ElastiCache"],
+  ["elasticache:serverlesscache", "ElastiCache"],
+  ["elasticache:cluster", "ElastiCache"],
+  ["es:domain", "OpenSearch"],
+  ["lambda:function", "Lambda"],
+];
+
+// The tags of every tagged resource of the types Components are in
+// `region`, by ARN, from one call the CLI pages through.
+async function tagsIn(aws: AwsRunner, region: string): Promise<Record<string, Tags>> {
+  const types = TAGGED_TYPES.map(([type]) => type);
+  const stdout = await aws(["resourcegroupstaggingapi", "get-resources", "--region", region, "--resource-type-filters", ...types, "--output", "json"]);
+  const { ResourceTagMappingList } = JSON.parse(stdout) as { ResourceTagMappingList: { ResourceARN: string; Tags: { Key: string; Value: string }[] }[] };
+  return Object.fromEntries(ResourceTagMappingList.map(({ ResourceARN, Tags }) => [ResourceARN, Object.fromEntries(Tags.map(({ Key, Value }) => [Key, Value]))]));
+}
+
+// The resource `arn` is, as `resourceKey` names it, and the index of its
+// type in `TAGGED_TYPES`, if it is of a type Components are.
+function resourceKeyOfArn(arn: string): { key: string; typeIndex: number } | undefined {
+  // arn:partition:service:region:account:resource, the resource being
+  // type:name, or type/name for OpenSearch.
+  const [, , awsService, region, , ...rest] = arn.split(":");
+  const resource = rest.join(":");
+  for (const [typeIndex, [type, service]] of TAGGED_TYPES.entries()) {
+    const [prefix, kind] = type.split(":") as [string, string];
+    if (awsService !== prefix || region === undefined) continue;
+    if (resource.startsWith(`${kind}:`) || resource.startsWith(`${kind}/`)) {
+      return { key: resourceKey(service, region, resourceNameOf(service, resource.slice(kind.length + 1))), typeIndex };
+    }
+  }
+  return undefined;
+}
+
+// One resource of `service` in `region`, by its name, as one string.
+function resourceKey(service: Service, region: string, name: string): string {
+  return `${service} ${region} ${name}`;
 }
 
 // `part` with its result, if it has one, changed by `change`.
@@ -212,13 +287,11 @@ function serviceOf(service: Service, reading: StoredReading): SupportedService {
   return supportedServiceOf(service, reading.product);
 }
 
-// The resource the Component read from `service` as `reading` is, in its
-// region: for Lambda, the function, whose name has no colon and comes before
-// the version in each of its Components' identifiers, and for every other
+// The resource the Component read from `service` as `reading` is, as
+// `resourceKey` names it: for Lambda, the function, and for every other
 // service, the Component itself.
 function resourceOf(service: Service, reading: StoredReading): string {
-  const resource = service === "Lambda" ? reading.identifier.split(":")[0]! : reading.identifier;
-  return `${reading.region} ${resource}`;
+  return resourceKey(service, reading.region, resourceNameOf(service, reading.identifier));
 }
 
 // The supported services not `monitored` that `scan` found resources of,
@@ -255,20 +328,40 @@ function storedReading({ product, ...reading }: ComponentReading): StoredReading
 }
 
 // The Components of `scan` of the `monitored` services, each matched to its
-// Release Cycle. A Scan from before awol kept it by part has every Component
-// it read.
+// Release Cycle, with its tags where `scan` read tags. A Scan from before
+// awol kept it by part has every Component it read.
 export function componentsOf(scan: Scan, monitored: SupportedService[]): ScannedComponent[] {
   if (scan.services === undefined) return scan.components ?? [];
   const products = new Map((scan.products ?? []).map((part) => [part.endOfLifeProduct, part]));
+  const tags = tagsByResource(scan);
   return scan.services.flatMap((part) =>
     (resultOf(part) ?? []).filter((reading) => monitored.includes(serviceOf(part.service, reading))).map((reading) => {
       const productPart = products.get(reading.product);
+      const tagPart = scan.tags?.find(({ region }) => region === part.region);
       // A product endoflife.date has never given matches no Release Cycle.
-      const component = matchedComponent(reading, resultOf(productPart) ?? []);
-      const lastReadAt = [staleSince(part), staleSince(productPart)].filter((date) => date !== undefined).sort()[0];
+      const matched = matchedComponent(reading, resultOf(productPart) ?? []);
+      const component = tags === undefined ? matched : { ...matched, tags: tags.get(resourceOf(part.service, reading)) ?? {} };
+      const lastReadAt = [staleSince(part), staleSince(productPart), staleSince(tagPart)].filter((date) => date !== undefined).sort()[0];
       return lastReadAt === undefined ? component : { ...component, stale: { lastReadAt } };
     }),
   );
+}
+
+// The tags `scan` read, by resource as `resourceKey` names it, if it read
+// tags: of two resources with one name, those of the one whose type comes
+// first in `TAGGED_TYPES`.
+function tagsByResource(scan: Scan): Map<string, Tags> | undefined {
+  if (scan.tags === undefined) return undefined;
+  const tags = new Map<string, { tags: Tags; typeIndex: number }>();
+  for (const part of scan.tags) {
+    for (const [arn, resourceTags] of Object.entries(resultOf(part) ?? {})) {
+      const resource = resourceKeyOfArn(arn);
+      if (resource === undefined) continue;
+      const kept = tags.get(resource.key);
+      if (kept === undefined || resource.typeIndex < kept.typeIndex) tags.set(resource.key, { tags: resourceTags, typeIndex: resource.typeIndex });
+    }
+  }
+  return new Map([...tags].map(([key, { tags: resourceTags }]) => [key, resourceTags]));
 }
 
 // The parts of `scan` that could not be read.
@@ -282,6 +375,7 @@ export function failedPartsOf(scan: Scan): FailedPart[] {
     ...(scan.regions === undefined ? [] : failed({ kind: "regions" }, scan.regions)),
     ...(scan.services ?? []).flatMap(({ service, region, ...read }) => failed({ kind: "service", service, region }, read)),
     ...(scan.unmonitored ?? []).flatMap(({ service, region, ...read }) => failed({ kind: "unmonitored", service, region }, read)),
+    ...(scan.tags ?? []).flatMap(({ region, ...read }) => failed({ kind: "tags", region }, read)),
     ...(scan.products ?? []).flatMap(({ endOfLifeProduct, ...read }) => failed({ kind: "endoflife.date", product: endOfLifeProduct }, read)),
   ];
 }

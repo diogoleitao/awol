@@ -1,0 +1,40 @@
+{
+  "ResourceTagMappingList": [
+    {
+      "ResourceARN": "arn:aws:rds:eu-west-1:123456789012:db:db-1",
+      "Tags": [
+        { "Key": "Environment", "Value": "production" },
+        { "Key": "Project", "Value": "platform" }
+      ]
+    },
+    {
+      "ResourceARN": "arn:aws:rds:eu-west-1:123456789012:cluster:cluster-1",
+      "Tags": [
+        { "Key": "environment", "Value": "staging" },
+        { "Key": "team", "Value": "data" }
+      ]
+    },
+    {
+      "ResourceARN": "arn:aws:elasticache:eu-west-1:123456789012:replicationgroup:group-1",
+      "Tags": [{ "Key": "PROJECT", "Value": "website" }]
+    },
+    {
+      "ResourceARN": "arn:aws:elasticache:eu-west-1:123456789012:serverlesscache:serverless-1",
+      "Tags": [{ "Key": "Environment", "Value": "" }]
+    },
+    {
+      "ResourceARN": "arn:aws:es:eu-west-1:123456789012:domain/domain-1",
+      "Tags": [
+        { "Key": "Environment", "Value": "development" },
+        { "Key": "Project", "Value": "search" }
+      ]
+    },
+    {
+      "ResourceARN": "arn:aws:lambda:eu-west-1:123456789012:function:function-6",
+      "Tags": [
+        { "Key": "Environment", "Value": "production" },
+        { "Key": "Project", "Value": "xavier" }
+      ]
+    }
+  ]
+}

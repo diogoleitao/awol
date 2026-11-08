@@ -9,6 +9,7 @@ import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { openAwol } from "../awol/awol.ts";
 import { awsCli } from "../aws/runner.ts";
+import { defaultConfigDir } from "../data/config.ts";
 import { defaultDataDir } from "../data/store.ts";
 import { endOfLifeFetcher } from "../endoflife/fetcher.ts";
 import { type Key, runCli } from "./run.ts";
@@ -44,7 +45,7 @@ process.exitCode = await runCli(process.argv.slice(2), {
   stderr: (text) => void process.stderr.write(text),
   // The `aws` CLI with the shell's active profile, endoflife.date, and the
   // real clock, as the server has.
-  awol: openAwol({ aws: awsCli(), endOfLife: endOfLifeFetcher(), dataDir, clock: { now: () => new Date() } }),
+  awol: openAwol({ aws: awsCli(), endOfLife: endOfLifeFetcher(), dataDir, configDir: defaultConfigDir(homedir()), clock: { now: () => new Date() } }),
   terminal: { stdin: process.stdin.isTTY === true, stdout: process.stdout.isTTY === true, stderr: process.stderr.isTTY === true },
   width: () => process.stderr.columns,
   // https://no-color.org: set to anything but empty, it turns color off.

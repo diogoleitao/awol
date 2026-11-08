@@ -22,6 +22,14 @@ _Avoid_: Version, branch, release line
 A line of a Product that AWS publishes its own support dates for, such as RDS PostgreSQL 13 or RDS MySQL 8.0. It can be wider than a Release Cycle: RDS MySQL Release Cycle 8.0.46 sits within AWS major version 8.0.
 _Avoid_: Major version, major, engine version
 
+**Environment**:
+The stage of your own software a Component serves, such as production, staging or development, as the Component's tags or identifier say. A Component can have no Environment.
+_Avoid_: Env, stage, stack
+
+**Project**:
+A piece of your own software that a group of Components serve, such as a platform or a website, as the Component's tags or identifier say. Unlike a Product, which is software AWS runs for you, a Project is software you build. A Component can have no Project.
+_Avoid_: Stack, app, application, service
+
 ### Setup
 
 **Discovery**:

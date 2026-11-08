@@ -13,12 +13,14 @@ import {
   type DashboardView,
   dashboardViewOf,
   filterOptionsOf,
+  groupByOptionsOf,
   INITIAL_TABLE_STATE,
   NO_FILTERS,
   nextSort,
   searchParamsOf,
   type TableState,
   tableStateOf,
+  toggledGroupBy,
 } from "./dashboard-view.ts";
 import {
   type DiscoveryFilters,
@@ -138,6 +140,14 @@ import memorydbDescribeClusters from "./fixtures/memorydb-describe-clusters.json
 import elasticBeanstalkEnvironments from "./fixtures/elasticbeanstalk-describe-environments.json" with { type: "json" };
 import ec2DescribeInstances from "./fixtures/ec2-describe-instances.json" with { type: "json" };
 
+// Written by hand in the shape of `aws resourcegroupstaggingapi get-resources
+// --region eu-west-1 --resource-type-filters ... --output json`, checked
+// against a recorded answer whose names could not be kept, which gives every
+// tagged resource of the types asked for with its tags, and leaves out those
+// with none: db-1, cluster-1, group-1, serverless-1 with an empty
+// Environment, domain-1 and function-6, their tag keys in different cases.
+import getResources from "./fixtures/resourcegroupstaggingapi-get-resources.json" with { type: "json" };
+
 const NOW = new Date("2026-11-03T12:00:00Z");
 
 const CALLER_IDENTITY = "sts get-caller-identity --output json";
@@ -216,7 +226,7 @@ function fakeEndOfLife(
 }
 
 function awol(aws: AwsRunner, now = NOW, endOfLife: EndOfLifeFetcher = fakeEndOfLife()) {
-  return openAwol({ aws, endOfLife, dataDir: dir, clock: { now: () => now } });
+  return openAwol({ aws, endOfLife, dataDir: dir, configDir: path.join(dir, "config"), clock: { now: () => now } });
 }
 
 // A Scan on `now` of an account that monitors every supported service.
@@ -553,7 +563,12 @@ type AccountContents = {
   domains?: Record<string, Domain[]>;
   functions?: Record<string, DeployedFunction[]>;
   unmonitored?: Record<string, Partial<Record<UnmonitoredCall, unknown>>>;
+  tags?: Record<string, Answer>;
 };
+
+function getResourcesIn(region: string) {
+  return `resourcegroupstaggingapi get-resources --region ${region} --resource-type-filters rds:cluster rds:db elasticache:replicationgroup elasticache:serverlesscache elasticache:cluster es:domain lambda:function --output json`;
+}
 
 // The calls Discovery counts the services awol does not monitor with, by
 // the argv in front of `--region`, and what each answers with no resources.
@@ -608,6 +623,7 @@ function accountAnswers({
   domains = {},
   functions = {},
   unmonitored = {},
+  tags = {},
 }: AccountContents = {}): Record<string, Answer> {
   const answers: Record<string, Answer> = {
     [CALLER_IDENTITY]: SIGNED_IN,
@@ -623,7 +639,9 @@ function accountAnswers({
     ...Object.keys(domains),
     ...Object.keys(functions),
     ...Object.keys(unmonitored),
+    ...Object.keys(tags),
   ]) {
+    answers[getResourcesIn(region)] = tags[region] ?? { stdout: JSON.stringify({ ResourceTagMappingList: [] }) };
     answers[describeDbInstancesIn(region)] = { stdout: JSON.stringify({ DBInstances: instances[region] ?? [] }) };
     answers[describeDbClustersIn(region)] = { stdout: JSON.stringify({ DBClusters: clusters[region] ?? [] }) };
     for (const [engine, answer] of Object.entries(majorVersions)) {
@@ -2438,12 +2456,11 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
     return { lastScan: model.lastScan!, aws };
   }
 
-  // Each group of `view`, as its Product, its Release Cycle and its
-  // Components' identifiers.
+  // Each group of `view`, as its Product and its Release Cycle, if grouped by
+  // them, and its Components' identifiers.
   function groupsOf(view: DashboardView) {
-    return view.groups.map(({ product, releaseCycle, components }) => ({
-      product,
-      releaseCycle,
+    return view.groups.map(({ levels, components }) => ({
+      ...Object.assign({}, ...levels.map(({ by, count, ...value }) => value)),
       identifiers: components.map(({ identifier }) => identifier),
     }));
   }
@@ -2575,7 +2592,7 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
       ...INITIAL_TABLE_STATE,
       filters: { ...NO_FILTERS, statuses: ["Falling behind", "Current"] },
       search: "db",
-      grouped: true,
+      groupBy: ["releaseCycle"],
     });
 
     expect(groupsOf(view)).toEqual([
@@ -2599,7 +2616,7 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
   it("groups the Components by Product and Release Cycle, each group where its most urgent Component is, keeping their order inside it", async () => {
     const { lastScan, aws } = await scannedAccount();
 
-    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, grouped: true });
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, groupBy: ["releaseCycle"] });
 
     expect(groupsOf(view)).toEqual([
       { product: "AWS Lambda", releaseCycle: "python3.8", identifiers: ["function-9:$LATEST"] },
@@ -2723,7 +2740,7 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
   it("sorts the Components inside each group, each group where its first Component is", async () => {
     const { lastScan, aws } = await scannedAccount();
 
-    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, grouped: true, sort: { column: "version", direction: "descending" } });
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, groupBy: ["releaseCycle"], sort: { column: "version", direction: "descending" } });
 
     expect(groupsOf(view)).toEqual([
       { product: "AWS Lambda", releaseCycle: "python3.12", identifiers: ["function-6:$LATEST"] },
@@ -2777,11 +2794,15 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
   it("shows a group that goes on past its page again on the next, with all of its Components counted on both", async () => {
     const { lastScan, aws } = await scannedAccount(30);
 
-    const first = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, grouped: true });
-    const second = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, grouped: true, page: { index: 1, size: 25 } });
+    const first = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, groupBy: ["releaseCycle"] });
+    const second = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, groupBy: ["releaseCycle"], page: { index: 1, size: 25 } });
 
     const groupsCounted = (view: DashboardView) =>
-      view.groups.map(({ releaseCycle, count, components }) => ({ releaseCycle, count, identifiers: components.map(({ identifier }) => identifier) }));
+      view.groups.map(({ levels: [level], count, components }) => ({
+        releaseCycle: level?.by === "releaseCycle" ? level.releaseCycle : undefined,
+        count,
+        identifiers: components.map(({ identifier }) => identifier),
+      }));
     expect(groupsCounted(first).at(-1)).toEqual({ releaseCycle: "python3.12", count: 31, identifiers: ["function-6:$LATEST", ...functionsFrom(11, 29)] });
     expect(groupsCounted(second)).toEqual([
       { releaseCycle: "python3.12", count: 31, identifiers: functionsFrom(30, 40) },
@@ -2796,7 +2817,7 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
     const state: TableState = {
       filters: { services: ["RDS", "Lambda"], products: ["RDS PostgreSQL"], regions: ["eu-west-1"], statuses: ["AWOL", "Falling behind"] },
       search: "db 14",
-      grouped: true,
+      groupBy: ["releaseCycle"],
       sort: { column: "endOfLife", direction: "descending" },
       page: { index: 1, size: 50 },
     };
@@ -2804,9 +2825,35 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
     const query = searchParamsOf(state).toString();
 
     expect(query).toBe(
-      "services=RDS&services=Lambda&products=RDS+PostgreSQL&regions=eu-west-1&statuses=AWOL&statuses=Falling+behind&search=db+14&grouped=true&sort=endOfLife&direction=descending&page=2&size=50",
+      "services=RDS&services=Lambda&products=RDS+PostgreSQL&regions=eu-west-1&statuses=AWOL&statuses=Falling+behind&search=db+14&groupBy=releaseCycle&sort=endOfLife&direction=descending&page=2&size=50",
     );
     expect(tableStateOf(new URLSearchParams(query))).toEqual(state);
+  });
+
+  it("reads a URL from before the table had a Group by choice, grouped, as grouped by Product and Release Cycle", () => {
+    const state = tableStateOf(new URLSearchParams("grouped=true"));
+
+    expect(state).toEqual({ ...INITIAL_TABLE_STATE, groupBy: ["releaseCycle"] });
+    expect(searchParamsOf(state).toString()).toBe("groupBy=releaseCycle");
+  });
+
+  it("keeps every grouping chosen in the URL, and reads them back from it in the order they nest, each once", () => {
+    const state: TableState = { ...INITIAL_TABLE_STATE, groupBy: ["environment", "project", "releaseCycle"] };
+
+    const query = searchParamsOf(state).toString();
+    const shuffled = tableStateOf(new URLSearchParams("groupBy=releaseCycle&groupBy=project&groupBy=team&groupBy=project"));
+
+    expect(query).toBe("groupBy=environment&groupBy=project&groupBy=releaseCycle");
+    expect(tableStateOf(new URLSearchParams(query))).toEqual(state);
+    expect(shuffled.groupBy).toEqual(["project", "releaseCycle"]);
+  });
+
+  it("turns a grouping on, or off when it is on, keeping the others and the order they nest in", () => {
+    expect(toggledGroupBy([], "releaseCycle")).toEqual(["releaseCycle"]);
+    expect(toggledGroupBy(["releaseCycle"], "environment")).toEqual(["environment", "releaseCycle"]);
+    expect(toggledGroupBy(["environment", "releaseCycle"], "project")).toEqual(["environment", "project", "releaseCycle"]);
+    expect(toggledGroupBy(["environment", "project", "releaseCycle"], "environment")).toEqual(["project", "releaseCycle"]);
+    expect(toggledGroupBy(["releaseCycle"], "releaseCycle")).toEqual([]);
   });
 
   it("keeps nothing in the URL for the table as it is at first", () => {
@@ -2817,7 +2864,7 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
   it("reads each part of the URL that is not one the table offers as that part at first", () => {
     const unknownValues = tableStateOf(
       new URLSearchParams(
-        "services=EKS&services=constructor&services=RDS&statuses=Dead&statuses=AWOL&grouped=yes&sort=extendedSupportEnd&direction=ascending&page=0&size=30",
+        "services=EKS&services=constructor&services=RDS&statuses=Dead&statuses=AWOL&grouped=yes&groupBy=team&sort=extendedSupportEnd&direction=ascending&page=0&size=30",
       ),
     );
     const unknownDirection = tableStateOf(new URLSearchParams("sort=region&direction=sideways"));
@@ -2868,6 +2915,482 @@ describe("the dashboard's filters, grouping, sorting and pages", () => {
       regions: ["eu-west-1", "us-east-1"],
       statuses: ["AWOL", "Falling behind", "Current", "Untracked"],
     });
+    expectOnlyJsonReads(aws);
+  });
+});
+
+describe("Environments and Projects", () => {
+  // Keeps `config` as the account's configuration file, as its user would
+  // write it.
+  async function configure(config: unknown, accountId = "123456789012") {
+    const file = path.join(dir, "config", "accounts", `${accountId}.json`);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, typeof config === "string" ? config : JSON.stringify(config));
+  }
+
+  // The configuration that reads Environments and Projects from identifiers,
+  // as one account named its Components.
+  const BY_IDENTIFIER = {
+    strategy: "identifier",
+    environments: { PRD: ["PROD"], STG: ["STAG", "STAGING"], DEV: [], TEST: [], ALL: [] },
+    projects: { platform: [], xavier: [], accounting: [], website: [] },
+  };
+
+  // The page's last Scan, by each Component's identifier, as its
+  // Environment and Project.
+  async function environmentsAndProjects(aws: AwsRunner) {
+    const model = await awol(aws).pageModel();
+    if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+    return Object.fromEntries(model.lastScan!.components.map(({ identifier, environment, project }) => [identifier, { environment, project }]));
+  }
+
+  it("reads them from each Component's identifier, a whole token at any position, whatever its case, the leftmost winning", async () => {
+    await configure(BY_IDENTIFIER);
+    const names = [
+      "prd-sms",
+      "PROD-indie-platform-updateworker",
+      "stg-indie-pricing-postgres",
+      "STAG-indie-website-cf_origin_request",
+      "staging-content-api-cache",
+      "media-image-processor-staging",
+      "aws-node-project-dev-hello",
+      "ALL-indie-website-translations",
+      "review-app-db",
+      "xavier-apps-live-price-sync",
+      "prod-platform-dbs-oklahoma",
+      "PROD-indie-accounting-updateworker",
+      "PROD-indie-websiteb-validatetraffic",
+      "STG-platformdeploy-priority-worker",
+      "test_website_dev_platform",
+    ];
+    const aws = account({ instances: { "eu-west-1": names.map((name) => instance(name)) } });
+    await scanAll(aws);
+
+    expect(await environmentsAndProjects(aws)).toEqual({
+      "prd-sms": { environment: "PRD", project: undefined },
+      "PROD-indie-platform-updateworker": { environment: "PRD", project: "platform" },
+      "stg-indie-pricing-postgres": { environment: "STG", project: undefined },
+      "STAG-indie-website-cf_origin_request": { environment: "STG", project: "website" },
+      "staging-content-api-cache": { environment: "STG", project: undefined },
+      "media-image-processor-staging": { environment: "STG", project: undefined },
+      "aws-node-project-dev-hello": { environment: "DEV", project: undefined },
+      "ALL-indie-website-translations": { environment: "ALL", project: "website" },
+      "review-app-db": { environment: undefined, project: undefined },
+      "xavier-apps-live-price-sync": { environment: undefined, project: "xavier" },
+      "prod-platform-dbs-oklahoma": { environment: "PRD", project: "platform" },
+      "PROD-indie-accounting-updateworker": { environment: "PRD", project: "accounting" },
+      "PROD-indie-websiteb-validatetraffic": { environment: "PRD", project: undefined },
+      "STG-platformdeploy-priority-worker": { environment: "STG", project: undefined },
+      "test_website_dev_platform": { environment: "TEST", project: "website" },
+    });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("matches a name or alias of several tokens on a run of them, the longer of two starting at the same token winning", async () => {
+    await configure({
+      strategy: "identifier",
+      environments: { PRD: ["PROD", "live_prod"] },
+      projects: { fe: [], client: [], "fe-client-area": [], "content-api": ["content_api_v2"], "fe-indie-next": [] },
+    });
+    const names = [
+      "PROD-indie-fe-client-area-validatetraffic",
+      "STAG-indie-content-api-cloudfront_invalidations",
+      "PROD-indie-fe-indie-next-validatetraffic",
+      "client-fe-client-area",
+      "content_api_v2-live-prod-db",
+      "fe-client",
+    ];
+    const aws = account({ instances: { "eu-west-1": names.map((name) => instance(name)) } });
+    await scanAll(aws);
+
+    expect(await environmentsAndProjects(aws)).toEqual({
+      "PROD-indie-fe-client-area-validatetraffic": { environment: "PRD", project: "fe-client-area" },
+      "STAG-indie-content-api-cloudfront_invalidations": { environment: undefined, project: "content-api" },
+      "PROD-indie-fe-indie-next-validatetraffic": { environment: "PRD", project: "fe-indie-next" },
+      "client-fe-client-area": { environment: undefined, project: "client" },
+      "content_api_v2-live-prod-db": { environment: "PRD", project: "content-api" },
+      "fe-client": { environment: undefined, project: "fe" },
+    });
+    expectOnlyJsonReads(aws);
+  });
+
+  // An account with the recorded instances, cluster-1, group-1,
+  // serverless-1, domain-1 and function-6, with its version 9 an alias
+  // points to, in eu-west-1, tagged as recorded there.
+  function taggedAccount(tags: Answer = { stdout: JSON.stringify(getResources) }) {
+    const latest = lambdaFunction("function-6");
+    return account({
+      clusters: { "eu-west-1": [cluster("cluster-1")] },
+      replicationGroups: { "eu-west-1": [replicationGroup("group-1").group] },
+      cacheClusters: { "eu-west-1": replicationGroup("group-1").members },
+      serverlessCaches: { "eu-west-1": [serverlessCache("serverless-1")] },
+      domains: { "eu-west-1": [domain("domain-1")] },
+      functions: {
+        "eu-west-1": [
+          {
+            latest,
+            aliases: ALIASES.filter(({ Name }) => Name === "previous"),
+            versions: [{ ...latest, Version: "9", Runtime: "python3.9" }],
+          },
+        ],
+      },
+      tags: { "eu-west-1": tags },
+    });
+  }
+
+  it("reads them from the tags Environment and Project, whatever the keys' case, for an account with no configuration file", async () => {
+    const aws = taggedAccount();
+    await scanAll(aws);
+
+    expect(await environmentsAndProjects(aws)).toEqual({
+      "db-1": { environment: "PRD", project: "platform" },
+      "db-2": {},
+      "db-3": {},
+      "db-4": {},
+      "db-5": {},
+      "cluster-1": { environment: "STG" },
+      "group-1": { project: "website" },
+      "serverless-1": {},
+      "domain-1": { environment: "DEV", project: "search" },
+      "function-6:$LATEST": { environment: "PRD", project: "xavier" },
+      "function-6:9": { environment: "PRD", project: "xavier" },
+    });
+    expect(aws.calls.filter(([service]) => service === "resourcegroupstaggingapi")).toHaveLength(ENABLED_REGIONS.length);
+    expect(regionsCalled(aws, "resourcegroupstaggingapi get-resources")).toEqual(ENABLED_REGIONS);
+    expectOnlyJsonReads(aws);
+  });
+
+  // The answer of `get-resources` in eu-west-1 with the recorded instances
+  // db-1 to db-5 tagged as `tags` gives each, by its number.
+  function instancesTagged(tags: Record<number, Record<string, string>>): Answer {
+    const resources = Object.entries(tags).map(([number, instanceTags]) => ({
+      ResourceARN: `arn:aws:rds:eu-west-1:123456789012:db:db-${number}`,
+      Tags: Object.entries(instanceTags).map(([Key, Value]) => ({ Key, Value })),
+    }));
+    return { stdout: JSON.stringify({ ResourceTagMappingList: resources }) };
+  }
+
+  it("folds the usual spellings of production, staging and development, whatever their case, into PRD, STG and DEV when the file names no Environments", async () => {
+    const environments = { 1: "prod", 2: "PRODUCTION", 3: "Stag", 4: "stg", 5: "Development" };
+    const aws = account({ tags: { "eu-west-1": instancesTagged(Object.fromEntries(Object.entries(environments).map(([n, Environment]) => [n, { Environment }]))) } });
+    await scanAll(aws);
+    const unconfigured = await environmentsAndProjects(aws);
+    await configure({ strategy: "tags", tagKeys: { environment: "Environment" } });
+    const configured = await environmentsAndProjects(aws);
+
+    for (const read of [unconfigured, configured]) {
+      expect(read).toEqual({
+        "db-1": { environment: "PRD" },
+        "db-2": { environment: "PRD" },
+        "db-3": { environment: "STG" },
+        "db-4": { environment: "STG" },
+        "db-5": { environment: "DEV" },
+      });
+    }
+    expectOnlyJsonReads(aws);
+  });
+
+  it("gives a DB cluster its own tags, not those of a member instance of the same name", async () => {
+    const tagged = (arn: string, Environment: string) => ({ ResourceARN: arn, Tags: [{ Key: "Environment", Value: Environment }] });
+    const aws = account({
+      instances: {},
+      clusters: { "eu-west-1": [cluster("cluster-1")] },
+      tags: {
+        "eu-west-1": {
+          stdout: JSON.stringify({
+            ResourceTagMappingList: [
+              tagged("arn:aws:rds:eu-west-1:123456789012:cluster:cluster-1", "PRD"),
+              tagged("arn:aws:rds:eu-west-1:123456789012:db:cluster-1", "DEV"),
+            ],
+          }),
+        },
+      },
+    });
+    await scanAll(aws);
+
+    expect(await environmentsAndProjects(aws)).toEqual({ "cluster-1": { environment: "PRD" } });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("spells tag values that differ only in case the way most Components do, ties going to the first in code point order", async () => {
+    await configure({ strategy: "tags", tagKeys: { environment: "Environment", project: "team" } });
+    const aws = account({
+      tags: {
+        "eu-west-1": instancesTagged({
+          1: { Environment: "qa", team: "data" },
+          2: { Environment: "QA", team: "Data" },
+          3: { Environment: "QA", team: "data" },
+          4: { team: "web" },
+          5: { team: "WEB" },
+        }),
+      },
+    });
+    await scanAll(aws);
+
+    expect(await environmentsAndProjects(aws)).toEqual({
+      "db-1": { environment: "QA", project: "data" },
+      "db-2": { environment: "QA", project: "data" },
+      "db-3": { environment: "QA", project: "data" },
+      "db-4": { project: "WEB" },
+      "db-5": { project: "WEB" },
+    });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("reads them from the tag keys given, any value its own, folding aliases into their name whatever their case", async () => {
+    await configure({
+      strategy: "tags",
+      tagKeys: { environment: "environment", project: "team" },
+      environments: { PRD: ["production"], STG: ["staging"] },
+    });
+    const aws = taggedAccount();
+    await scanAll(aws);
+
+    expect(await environmentsAndProjects(aws)).toMatchObject({
+      "db-1": { environment: "PRD", project: undefined },
+      "cluster-1": { environment: "STG", project: "data" },
+      "domain-1": { environment: "development", project: undefined },
+      "function-6:$LATEST": { environment: "PRD", project: undefined },
+    });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("reads no tags for an account that reads them from identifiers", async () => {
+    await configure(BY_IDENTIFIER);
+    const aws = taggedAccount();
+    await scanAll(aws);
+
+    expect(await environmentsAndProjects(aws)).toMatchObject({ "db-1": {}, "function-6:$LATEST": {} });
+    expect(aws.calls.filter(([service]) => service === "resourcegroupstaggingapi")).toEqual([]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("keeps a region's tags that cannot be read on the next Scan, Stale since their last successful read", async () => {
+    const later = new Date("2026-11-04T12:00:00Z");
+    await scanAll(taggedAccount());
+    const aws = taggedAccount({ stderr: awsErrors.accessDenied });
+    await scanAll(aws, later);
+
+    const model = await awol(aws, later).pageModel();
+    if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+    expect(model.lastScan!.failedParts).toEqual([
+      { part: { kind: "tags", region: "eu-west-1" }, error: awsErrors.accessDenied.trim(), lastReadAt: NOW.toISOString() },
+    ]);
+    expect(await environmentsAndProjects(aws)).toMatchObject({ "db-1": { environment: "PRD", project: "platform" } });
+    expect(model.lastScan!.components.find(({ identifier }) => identifier === "db-1")!.stale).toEqual({ lastReadAt: NOW.toISOString() });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows the error of a region's tags never read successfully, its Components with no Environment or Project", async () => {
+    const aws = taggedAccount({ stderr: awsErrors.accessDenied });
+    await scanAll(aws);
+
+    const model = await awol(aws).pageModel();
+    if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+    expect(model.lastScan!.failedParts).toEqual([{ part: { kind: "tags", region: "eu-west-1" }, error: awsErrors.accessDenied.trim() }]);
+    expect(await environmentsAndProjects(aws)).toMatchObject({ "db-1": {}, "function-6:$LATEST": {} });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("follows a change to the configuration file on the next page, without a Scan", async () => {
+    const aws = taggedAccount();
+    await scanAll(aws);
+    const before = await environmentsAndProjects(aws);
+
+    await configure({ strategy: "identifier", environments: { DB: [] }, projects: { "6": [] } });
+
+    expect(before).toMatchObject({ "db-1": { environment: "PRD" }, "function-6:$LATEST": { project: "xavier" } });
+    expect(await environmentsAndProjects(aws)).toMatchObject({
+      "db-1": { environment: "DB", project: undefined },
+      "function-6:$LATEST": { environment: undefined, project: "6" },
+    });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("shows why a configuration file is not one, with its path, giving no Component an Environment or Project, and still reads tags", async () => {
+    const file = path.join(dir, "config", "accounts", "123456789012.json");
+    const cases: [unknown, string][] = [
+      ["{ strategy: identifier }", "not JSON"],
+      [["identifier"], "not a JSON object"],
+      [{ strategy: "names" }, 'unknown "strategy" "names"'],
+      [{ strategy: "identifier", environment: { PRD: [] } }, 'unknown field "environment"'],
+      [{ strategy: "identifier", environments: { PRD: "PROD" } }, '"environments" is not an object of names'],
+      [{ strategy: "tags" }, '"tagKeys" is missing'],
+      [{ strategy: "tags", tagKeys: { env: "env" } }, 'unknown field "env" in "tagKeys"'],
+      [{ strategy: "fixed-tags", tagKeys: { environment: "env" } }, '"tagKeys" is only for the "tags" strategy'],
+      [{ strategy: "tags", tagKeys: { environment: "env" }, environments: { PRD: [""] } }, '"environments" has an empty name or alias'],
+      [{ strategy: "identifier", projects: { "": [] } }, '"projects" has an empty name or alias'],
+      [{ strategy: "identifier", environments: { PRD: ["prod-"] } }, 'the alias "prod-" of "PRD" has an empty part between - or _'],
+      [{ strategy: "identifier", projects: { "fe--area": [] } }, 'the name "fe--area" has an empty part between - or _'],
+    ];
+    for (const [config, error] of cases) {
+      await configure(config);
+      const aws = taggedAccount();
+      await scanAll(aws);
+
+      const model = await awol(aws).pageModel();
+      if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+      expect(model.lastScan!.configError, JSON.stringify(config)).toEqual({ path: file, error: expect.stringContaining(error) });
+      expect(model.lastScan!.components.filter(({ environment, project }) => environment !== undefined || project !== undefined)).toEqual([]);
+      expect(regionsCalled(aws, "resourcegroupstaggingapi get-resources")).toEqual(ENABLED_REGIONS);
+      expectOnlyJsonReads(aws);
+    }
+  });
+
+  it("shows no configuration error for an account with no configuration file, nor one with a configuration", async () => {
+    const aws = taggedAccount();
+    await scanAll(aws);
+    const unconfigured = await awol(aws).pageModel();
+    await configure(BY_IDENTIFIER);
+    const configured = await awol(aws).pageModel();
+
+    for (const model of [unconfigured, configured]) {
+      if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+      expect(model.lastScan!.configError).toBeUndefined();
+    }
+    expectOnlyJsonReads(aws);
+  });
+
+  // The page's last Scan of an account that reads Environments and Projects
+  // from identifiers, with six instances, most urgent first:
+  //
+  //   AWOL            stg-platform-db  STG  platform  PostgreSQL 13
+  //   AWOL            website-db       -    website   PostgreSQL 13
+  //   Falling behind  prd-website-db   PRD  website   PostgreSQL 14
+  //   Current         prd-platform-db  PRD  platform  PostgreSQL 17
+  //   Current         review-app-db    -    -         PostgreSQL 17
+  //   Current         stg-db           STG  -         PostgreSQL 17
+  //
+  // and the fake runner, to check last.
+  async function groupedAccount() {
+    await configure(BY_IDENTIFIER);
+    const aws = account({
+      instances: {
+        "eu-west-1": [
+          instance("stg-platform-db", { EngineVersion: "13.22" }),
+          instance("prd-website-db", { EngineVersion: "14.19" }),
+          instance("prd-platform-db"),
+          instance("review-app-db"),
+          instance("stg-db"),
+          instance("website-db", { EngineVersion: "13.22" }),
+        ],
+      },
+    });
+    await scanAll(aws);
+    const model = await awol(aws).pageModel();
+    if (model.kind !== "signed-in") throw new Error(`not signed in: ${model.reason}`);
+    return { lastScan: model.lastScan!, aws };
+  }
+
+  // Each group of `view`, as each level it is grouped in, outermost first,
+  // with how many Components the level has, and its Components' identifiers.
+  function groupsOf(view: DashboardView) {
+    return view.groups.map(({ levels, components }) => ({
+      levels: levels.map(({ by, ...level }) => level),
+      identifiers: components.map(({ identifier }) => identifier),
+    }));
+  }
+
+  it("groups the Components by Environment, each group where its most urgent Component is, those with none last", async () => {
+    const { lastScan, aws } = await groupedAccount();
+
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, groupBy: ["environment"] });
+
+    expect(view.groupBy).toEqual(["environment"]);
+    expect(groupsOf(view)).toEqual([
+      { levels: [{ environment: "STG", count: 2 }], identifiers: ["stg-platform-db", "stg-db"] },
+      { levels: [{ environment: "PRD", count: 2 }], identifiers: ["prd-website-db", "prd-platform-db"] },
+      { levels: [{ environment: undefined, count: 2 }], identifiers: ["website-db", "review-app-db"] },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("groups the Components by Project, those with none last", async () => {
+    const { lastScan, aws } = await groupedAccount();
+
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, groupBy: ["project"] });
+
+    expect(groupsOf(view)).toEqual([
+      { levels: [{ project: "platform", count: 2 }], identifiers: ["stg-platform-db", "prd-platform-db"] },
+      { levels: [{ project: "website", count: 2 }], identifiers: ["website-db", "prd-website-db"] },
+      { levels: [{ project: undefined, count: 2 }], identifiers: ["review-app-db", "stg-db"] },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("groups the Components by Environment and, inside each, by Project, in the same order at both levels", async () => {
+    const { lastScan, aws } = await groupedAccount();
+
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, groupBy: ["environment", "project"] });
+
+    const stg = { environment: "STG", count: 2 };
+    const prd = { environment: "PRD", count: 2 };
+    const none = { environment: undefined, count: 2 };
+    expect(groupsOf(view)).toEqual([
+      { levels: [stg, { project: "platform", count: 1 }], identifiers: ["stg-platform-db"] },
+      { levels: [stg, { project: undefined, count: 1 }], identifiers: ["stg-db"] },
+      { levels: [prd, { project: "website", count: 1 }], identifiers: ["prd-website-db"] },
+      { levels: [prd, { project: "platform", count: 1 }], identifiers: ["prd-platform-db"] },
+      { levels: [none, { project: "website", count: 1 }], identifiers: ["website-db"] },
+      { levels: [none, { project: undefined, count: 1 }], identifiers: ["review-app-db"] },
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("nests every grouping chosen, Environment outermost, then Project, then Product and Release Cycle, whatever order they are given in", async () => {
+    const { lastScan, aws } = await groupedAccount();
+
+    const view = dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, groupBy: ["releaseCycle", "environment"] });
+
+    const cycle = (releaseCycle: string) => ({ product: "RDS PostgreSQL", releaseCycle, count: 1 });
+    expect(view.groupBy).toEqual(["environment", "releaseCycle"]);
+    expect(groupsOf(view)).toEqual([
+      { levels: [{ environment: "STG", count: 2 }, cycle("13")], identifiers: ["stg-platform-db"] },
+      { levels: [{ environment: "STG", count: 2 }, cycle("17")], identifiers: ["stg-db"] },
+      { levels: [{ environment: "PRD", count: 2 }, cycle("14")], identifiers: ["prd-website-db"] },
+      { levels: [{ environment: "PRD", count: 2 }, cycle("17")], identifiers: ["prd-platform-db"] },
+      { levels: [{ environment: undefined, count: 2 }, cycle("13")], identifiers: ["website-db"] },
+      { levels: [{ environment: undefined, count: 2 }, cycle("17")], identifiers: ["review-app-db"] },
+    ]);
+    expect(groupsOf(dashboardViewOf(lastScan, { ...INITIAL_TABLE_STATE, groupBy: ["environment", "project", "releaseCycle"] }))[1]).toEqual({
+      levels: [{ environment: "STG", count: 2 }, { project: undefined, count: 1 }, cycle("17")],
+      identifiers: ["stg-db"],
+    });
+    expectOnlyJsonReads(aws);
+  });
+
+  it("sorts the Components inside each group, each group where its first Component is at both levels, those with none still last", async () => {
+    const { lastScan, aws } = await groupedAccount();
+
+    const view = dashboardViewOf(lastScan, {
+      ...INITIAL_TABLE_STATE,
+      groupBy: ["environment", "project"],
+      sort: { column: "identifier", direction: "ascending" },
+    });
+
+    expect(groupsOf(view).map(({ levels }) => levels.map((level) => Object.values(level)[0]))).toEqual([
+      ["PRD", "platform"],
+      ["PRD", "website"],
+      ["STG", "platform"],
+      ["STG", undefined],
+      [undefined, "website"],
+      [undefined, undefined],
+    ]);
+    expectOnlyJsonReads(aws);
+  });
+
+  it("offers Environment and Project to group by only with a configuration, leaving them out without one", async () => {
+    const { lastScan, aws } = await groupedAccount();
+    const broken = { ...lastScan, configError: { path: "/config.json", error: "not JSON" } };
+
+    const view = dashboardViewOf(broken, { ...INITIAL_TABLE_STATE, groupBy: ["environment", "project", "releaseCycle"] });
+    const ungrouped = dashboardViewOf(broken, { ...INITIAL_TABLE_STATE, groupBy: ["environment"] });
+
+    expect(groupByOptionsOf(lastScan)).toEqual(["environment", "project", "releaseCycle"]);
+    expect(groupByOptionsOf(broken)).toEqual(["releaseCycle"]);
+    expect(view.groupBy).toEqual(["releaseCycle"]);
+    expect(ungrouped.groupBy).toEqual([]);
+    expect(groupsOf(ungrouped)).toEqual([{ levels: [], identifiers: expect.any(Array) }]);
     expectOnlyJsonReads(aws);
   });
 });
@@ -3795,11 +4318,12 @@ describe("the progress of a Scan or Discovery", () => {
       { kind: "step-done", step: { kind: "scanned", service: "Lambda" } },
       { kind: "step-done", step: { kind: "endoflife.date" } },
     ]);
-    // The regions, then RDS and Lambda read and ElastiCache and OpenSearch
-    // counted in each of the 17 regions, then Lambda's one Product.
+    // The regions, then RDS and Lambda read, ElastiCache and OpenSearch
+    // counted and the tags read in each of the 17 regions, then Lambda's one
+    // Product.
     const counted = parts(progress);
     expect(counted[0]).toEqual({ done: 0, total: 1 });
-    expect(counted.at(-1)).toEqual({ done: 70, total: 70 });
+    expect(counted.at(-1)).toEqual({ done: 87, total: 87 });
     expect(counted.map(({ total }) => total)).toEqual(counted.map(({ total }) => total).sort((a, b) => a - b));
     expectOnlyJsonReads(aws);
   });

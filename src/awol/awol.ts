@@ -1,9 +1,11 @@
 import { readOnly } from "../aws/read-only.ts";
 import { AwsCliError, type AwsRunner } from "../aws/runner.ts";
+import { type LoadedConfig, openConfig, readsTags } from "../data/config.ts";
 import { Cancelled as CancelledError, type Running, type Starter } from "../data/run-lock.ts";
 import { openStore } from "../data/store.ts";
 import type { EndOfLifeFetcher } from "../endoflife/fetcher.ts";
 import { openReleaseCycles } from "../endoflife/release-cycles.ts";
+import { environmentAndProjectOf, withCommonSpellings } from "./account-config.ts";
 import { SUPPORTED_SERVICES, type SupportedService } from "./component.ts";
 import { countSupportedIn, type Discovery, type DiscoveryScope, discoveryResultOf, runDiscovery } from "./discovery.ts";
 import type { ComponentDrift, ComponentRow, DiscoveryResult, LastScan, PageModel, SupportDates } from "./page-model.ts";
@@ -20,6 +22,8 @@ export type AwolOptions = {
   // Where Scans read Release Cycles from.
   endOfLife: EndOfLifeFetcher;
   dataDir: string;
+  // Where each account's configuration file is.
+  configDir: string;
   clock: Clock;
 };
 
@@ -80,10 +84,11 @@ export type StartOptions = { onDiscovery?: () => void; onPart?: (discovery: Disc
 // dashboard and the CLI both run.
 export type Awol = ReturnType<typeof openAwol>;
 
-export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions) {
+export function openAwol({ aws: runner, endOfLife, dataDir, configDir, clock }: AwolOptions) {
   // Every AWS call awol makes goes through here (ADR 0002).
   const aws = readOnly(runner);
   const store = openStore(dataDir);
+  const config = openConfig(configDir);
   const releaseCycles = openReleaseCycles(endOfLife, dataDir);
 
   // The ID of the AWS account behind the active profile, recorded as seen
@@ -178,9 +183,10 @@ export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions
     return exclusively(accountId, "Scan", { startedBy, takeOver }, async (stopIfCancelled) => {
       // Read once the lock is held, so no Scan that ended meanwhile is lost.
       const { lastScan } = await store.account(accountId).load();
-      const scan = await runScan(aws, releaseCycles, countSupportedIn, clock.now(), lastScan, monitored, onProgress, stopIfCancelled);
+      const loaded = await config.account(accountId);
+      const scan = await runScan(aws, releaseCycles, countSupportedIn, clock.now(), lastScan, monitored, readsTags(loaded), onProgress, stopIfCancelled);
       await store.account(accountId).update((state) => ({ ...state, lastScan: scan }));
-      return { kind: "scanned", lastScan: lastScanOf(scan, monitored, clock.now()) } as const;
+      return { kind: "scanned", lastScan: lastScanOf(scan, monitored, clock.now(), loaded) } as const;
     });
   }
 
@@ -256,8 +262,13 @@ export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions
           discovery: discovery === undefined ? undefined : discoveryResultOf(discovery),
           monitoredServices,
           // A Scan with no Monitored services chosen read every supported
-          // service: one asked to, or one from before awol had them.
-          lastScan: lastScan === undefined ? undefined : lastScanOf(lastScan, monitoredServices ?? [...SUPPORTED_SERVICES], clock.now()),
+          // service: one asked to, or one from before awol had them. The
+          // configuration is read on each page, so a change to it shows
+          // without a Scan.
+          lastScan:
+            lastScan === undefined
+              ? undefined
+              : lastScanOf(lastScan, monitoredServices ?? [...SUPPORTED_SERVICES], clock.now(), await config.account(accountId)),
           running: await account.lock.running(),
         } as const;
       });
@@ -268,11 +279,12 @@ export function openAwol({ aws: runner, endOfLife, dataDir, clock }: AwolOptions
 // The last Scan as the dashboard shows it on `now`'s date: each Component's
 // Status, sorted by Status and then by soonest End of life, and counted, the
 // parts that could not be read, and the supported services it found
-// resources of that are not `monitored`. Where AWS gives a date, it decides
-// over endoflife.date's.
-function lastScanOf(scan: Scan, monitored: SupportedService[], now: Date): LastScan {
+// resources of that are not `monitored`, each Component with its
+// Environment and Project as `loaded` reads them. Where AWS gives a date,
+// it decides over endoflife.date's.
+function lastScanOf(scan: Scan, monitored: SupportedService[], now: Date, loaded: LoadedConfig): LastScan {
   const today = now.toISOString().slice(0, 10);
-  const components = componentsOf(scan, monitored).map(({ releaseCycle, awsLifecycle: aws = {}, drift = NO_DRIFT, ...component }): ComponentRow => {
+  const components = componentsOf(scan, monitored).map(({ releaseCycle, awsLifecycle: aws = {}, drift = NO_DRIFT, tags, ...component }): ComponentRow => {
     const fromEndOfLifeDate: SupportDates = {
       endOfLife: releaseCycle?.endOfLife,
       extendedSupportEnd: releaseCycle?.extendedSupportEnd,
@@ -284,6 +296,7 @@ function lastScanOf(scan: Scan, monitored: SupportedService[], now: Date): LastS
     };
     return {
       ...component,
+      ...(loaded.kind === "loaded" ? environmentAndProjectOf(loaded.config, component, tags) : {}),
       releaseCycle: deciding?.name,
       status: statusOf(deciding, today),
       cycleReleaseDate: deciding?.releaseDate,
@@ -303,9 +316,10 @@ function lastScanOf(scan: Scan, monitored: SupportedService[], now: Date): LastS
   return {
     ranAt: scan.ranAt,
     counts: countsOf(components),
-    components,
+    components: withCommonSpellings(components),
     failedParts: failedPartsOf(scan),
     unmonitoredServices: unmonitoredServicesOf(scan, monitored),
+    ...(loaded.kind === "invalid" ? { configError: { path: loaded.path, error: loaded.error } } : {}),
   };
 }
 

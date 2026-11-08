@@ -386,6 +386,7 @@ function partName(part: Part): string {
   if (part.kind === "regions") return "regions";
   if (part.kind === "presence") return `${part.awsService} ${part.region}`;
   if (part.kind === "endoflife.date") return `endoflife.date ${part.product}`;
+  if (part.kind === "tags") return `tags ${part.region}`;
   return `${part.service} ${part.region}`;
 }
 

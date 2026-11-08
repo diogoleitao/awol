@@ -60,7 +60,7 @@ const NO_TERMINAL = { stdin: false, stdout: false, stderr: false };
 
 // awol on the data directory, reading AWS with `aws`.
 function awolWith(aws: AwsRunner) {
-  return openAwol({ aws, endOfLife: fakeEndOfLife, dataDir: dataDir(), clock: { now: () => NOW } });
+  return openAwol({ aws, endOfLife: fakeEndOfLife, dataDir: dataDir(), configDir: path.join(dir, "config"), clock: { now: () => NOW } });
 }
 
 async function cli(
@@ -180,6 +180,8 @@ function fakeAws(changes: Record<string, unknown | { stderr: string }> = {}): Aw
     [region("memorydb describe-clusters")]: { Clusters: [] },
     "elasticbeanstalk describe-environments --region eu-west-1 --no-include-deleted --output json": { Environments: [] },
     [region("ec2 describe-instances")]: { Reservations: [] },
+    "resourcegroupstaggingapi get-resources --region eu-west-1 --resource-type-filters rds:cluster rds:db elasticache:replicationgroup elasticache:serverlesscache elasticache:cluster es:domain lambda:function --output json":
+      { ResourceTagMappingList: [] },
     ...changes,
   };
   const calls: string[] = [];

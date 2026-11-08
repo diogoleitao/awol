@@ -10,6 +10,16 @@ export const SUPPORTED_SERVICES = ["RDS", "Aurora", "ElastiCache Redis OSS", "Op
 // A service awol can monitor.
 export type SupportedService = (typeof SUPPORTED_SERVICES)[number];
 
+// A resource's tags, by key.
+export type Tags = Record<string, string>;
+
+// The name of the resource the Component `identifier` of `service` is: for
+// Lambda, its function's, which has no colon and comes before the version,
+// and for every other service, the identifier itself.
+export function resourceNameOf(service: Service, identifier: string): string {
+  return service === "Lambda" ? identifier.split(":")[0]! : identifier;
+}
+
 // How many resources of each of some supported services there are.
 export type SupportedCounts = Partial<Record<SupportedService, number>>;
 

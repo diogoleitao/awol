@@ -11,6 +11,10 @@ import {
   dashboardViewOf,
   type Filters,
   filterOptionsOf,
+  type GroupBy,
+  type GroupLevel,
+  groupByOptionsOf,
+  levelKeyOf,
   NO_FILTERS,
   nextSort,
   PAGE_SIZES,
@@ -19,6 +23,7 @@ import {
   searchParamsOf,
   type TableState,
   tableStateOf,
+  toggledGroupBy,
   withQuery,
 } from "../awol/dashboard-view.ts";
 import { componentPathOf } from "../awol/component-page.ts";
@@ -81,7 +86,7 @@ const FILTER_SECTIONS = {
 // it was.
 export function ScanTable({ scan, children }: { scan: LastScan; children?: ReactNode }) {
   const [state, setState, query] = useUrlState(tableStateOf, searchParamsOf);
-  const { filters, search, grouped, sort, page } = state;
+  const { filters, search, sort, page } = state;
   const options = filterOptionsOf(scan);
   const view = dashboardViewOf(scan, state);
   const anyChosen = Object.values(filters).some((chosen) => chosen.length > 0);
@@ -154,10 +159,15 @@ export function ScanTable({ scan, children }: { scan: LastScan; children?: React
             className="h-8 w-80 rounded-md border bg-transparent px-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
           />
         </label>
-        <div className="ml-auto">
-          <ToggleButton pressed={grouped} onClick={() => change(() => ({ grouped: !grouped }))}>
-            Group by Product and Release Cycle
-          </ToggleButton>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <span className="text-sm text-muted-foreground">Group by</span>
+          {/* Toggled from what the table groups by, not from the URL, so a
+              grouping the table does not offer is dropped, not kept. */}
+          {groupByOptionsOf(scan).map((by) => (
+            <ToggleButton key={by} pressed={view.groupBy.includes(by)} onClick={() => change(() => ({ groupBy: toggledGroupBy(view.groupBy, by) }))}>
+              {GROUP_BY_LABELS[by]}
+            </ToggleButton>
+          ))}
         </div>
       </div>
       <div className={TABLE_AREA}>
@@ -185,8 +195,8 @@ export function ScanTable({ scan, children }: { scan: LastScan; children?: React
                 </TableCell>
               </TableRow>
             )}
-            {view.groups.map((group) => (
-              <Group key={group.key} group={group} grouped={grouped} query={query} />
+            {view.groups.map((group, index) => (
+              <Group key={group.key} group={group} fromLevel={firstNewLevel(view.groups[index - 1], group)} query={query} />
             ))}
           </TableBody>
         </Table>
@@ -267,32 +277,76 @@ function ToggleButton({ pressed, onClick, children }: { pressed: boolean; onClic
   );
 }
 
-// A group's rows on the page, under a row naming its Product and Release
-// Cycle and how many Components it has on every page when grouped.
-function Group({ group, grouped, query }: { group: ComponentGroup; grouped: boolean; query: string }) {
-  const { count } = group;
+// What each grouping is called.
+const GROUP_BY_LABELS: Record<GroupBy, string> = {
+  environment: "Environment",
+  project: "Project",
+  releaseCycle: "Product and Release Cycle",
+};
+
+// The first of `group`'s levels that the group before it on the page,
+// `previous`, is not in: its first level for the page's first group.
+function firstNewLevel(previous: ComponentGroup | undefined, group: ComponentGroup): number {
+  const index = group.levels.findIndex((level, depth) => previous === undefined || levelKeyOf(level) !== levelKeyOf(previous.levels[depth]!));
+  return index === -1 ? group.levels.length : index;
+}
+
+// A group's rows on the page, under a row for each of its levels from
+// `fromLevel`, the levels the group before it is not in, each naming what
+// it is of and how many Components it has on every page.
+function Group({ group, fromLevel, query }: { group: ComponentGroup; fromLevel: number; query: string }) {
   return (
     <>
-      {grouped && (
-        <TableRow className="bg-muted/50 hover:bg-muted/50">
-          <TableCell colSpan={COLUMNS} className="font-medium">
-            {group.product}{" "}
-            {group.releaseCycle === undefined ? (
-              <span className="text-muted-foreground">no Release Cycle</span>
-            ) : (
-              <span className="font-mono">{group.releaseCycle}</span>
-            )}
-            <span className="text-muted-foreground">
-              {" "}
-              · {count} {count === 1 ? "Component" : "Components"}
-            </span>
-          </TableCell>
-        </TableRow>
-      )}
+      {group.levels.slice(fromLevel).map((level, index) => (
+        <GroupRow key={levelKeyOf(level)} count={level.count} depth={fromLevel + index}>
+          <LevelName level={level} />
+        </GroupRow>
+      ))}
       {group.components.map((component) => (
         <ComponentTableRow key={keyOf(component)} component={component} query={query} />
       ))}
     </>
+  );
+}
+
+// What a group's `level` is of.
+function LevelName({ level }: { level: GroupLevel }) {
+  if (level.by === "environment") return level.environment ?? <span className="text-muted-foreground">No Environment</span>;
+  if (level.by === "project") return level.project ?? <span className="text-muted-foreground">No Project</span>;
+  return (
+    <>
+      {level.product}{" "}
+      {level.releaseCycle === undefined ? (
+        <span className="text-muted-foreground">no Release Cycle</span>
+      ) : (
+        <span className="font-mono">{level.releaseCycle}</span>
+      )}
+    </>
+  );
+}
+
+// How far in a group's row at each depth is, and its shade: the outermost
+// darkest and not in at all.
+const DEPTH_CLASSES = [
+  { row: "bg-muted/50 hover:bg-muted/50", cell: "" },
+  { row: "bg-muted/30 hover:bg-muted/30", cell: "pl-6" },
+  { row: "bg-muted/15 hover:bg-muted/15", cell: "pl-10" },
+];
+
+// A row over a group's rows at `depth`: what it is of, `children`, and its
+// `count` of Components.
+function GroupRow({ count, depth, children }: { count: number; depth: number; children: ReactNode }) {
+  const classes = DEPTH_CLASSES[Math.min(depth, DEPTH_CLASSES.length - 1)]!;
+  return (
+    <TableRow className={classes.row}>
+      <TableCell colSpan={COLUMNS} className={cn("font-medium", classes.cell)}>
+        {children}
+        <span className="text-muted-foreground">
+          {" "}
+          · {count} {count === 1 ? "Component" : "Components"}
+        </span>
+      </TableCell>
+    </TableRow>
   );
 }
 

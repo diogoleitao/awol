@@ -5,17 +5,20 @@ import { cache } from "react";
 import { awsCli } from "../aws/runner.ts";
 import { openAwol } from "../awol/awol.ts";
 import type { DiscoveryScope } from "../awol/discovery.ts";
+import { defaultConfigDir } from "../data/config.ts";
 import { defaultDataDir } from "../data/store.ts";
 import { startedWhere } from "../awol/page-model.ts";
 import { endOfLifeFetcher } from "../endoflife/fetcher.ts";
 
 // The app's entry into awol: the `aws` CLI with the shell's active profile,
-// endoflife.date, the state under ~/.local/share/awol/, and the real clock.
+// endoflife.date, the state under ~/.local/share/awol/, the configuration
+// under ~/.config/awol/, and the real clock.
 export function appAwol() {
   return openAwol({
     aws: awsCli(),
     endOfLife: endOfLifeFetcher(),
     dataDir: defaultDataDir(homedir()),
+    configDir: defaultConfigDir(homedir()),
     clock: { now: () => new Date() },
   });
 }
